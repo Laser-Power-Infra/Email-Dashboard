@@ -200,6 +200,29 @@ if (!fs.existsSync(DATA_DIR)) {
 const CACHE_FILE = path.join(DATA_DIR, 'sync_cache.json');
 let lastAiError = null; // Store last AI API error for frontend diagnosis
 
+const memoryCache = new Map();
+
+function getMemoryCache(key) {
+  const item = memoryCache.get(key);
+  if (!item) return null;
+  if (Date.now() > item.expiresAt) {
+    memoryCache.delete(key);
+    return null;
+  }
+  return item.data;
+}
+
+function setMemoryCache(key, data, ttlSeconds = 30) {
+  memoryCache.set(key, {
+    data,
+    expiresAt: Date.now() + (ttlSeconds * 1000)
+  });
+}
+
+function clearMemoryCache() {
+  memoryCache.clear();
+}
+
 let dbPool = null;
 
 function getDbPool() {
@@ -1904,6 +1927,12 @@ app.get('/api/tenders', async (req, res) => {
   const { excludeTenderTiger } = req.query;
   const isExclude = excludeTenderTiger === 'true';
 
+  const cacheKey = `tenders_${isExclude}`;
+  const cachedResult = getMemoryCache(cacheKey);
+  if (cachedResult) {
+    return res.json(cachedResult);
+  }
+
   let countsMap = {};
   let conn;
   try {
@@ -2067,6 +2096,7 @@ app.get('/api/tenders', async (req, res) => {
     return b.rowNumber - a.rowNumber;
   });
 
+  setMemoryCache(cacheKey, tendersWithMatches, 30);
   res.json(tendersWithMatches);
 });
 
@@ -2218,6 +2248,12 @@ app.get('/api/recent-matches', async (req, res) => {
   const limitNum = Math.min(2000, Math.max(1, Number(limit)));
   const offset = (pageNum - 1) * limitNum;
 
+  const cacheKey = `recent_matches_${isExclude}_${pageNum}_${limitNum}`;
+  const cachedData = getMemoryCache(cacheKey);
+  if (cachedData) {
+    return res.json(cachedData);
+  }
+
   let conn;
   try {
     conn = await getDbConnection();
@@ -2271,7 +2307,9 @@ app.get('/api/recent-matches', async (req, res) => {
       ocr_snippet: getOcrSnippet(e.ocr_text, e.matched_token || e.matchedToken || '')
     }));
 
-    res.json({ emails: formattedEmails, total: Number(total), page: pageNum, limit: limitNum });
+    const payload = { emails: formattedEmails, total: Number(total), page: pageNum, limit: limitNum };
+    setMemoryCache(cacheKey, payload, 30);
+    res.json(payload);
   } catch (err) {
     console.error('Failed to load recent matched emails:', err.message);
     res.status(500).json({ error: 'Failed to load recent matches', details: err.message });
@@ -4213,6 +4251,7 @@ if (fs.existsSync(distPath)) {
 app.post('/api/sync/scan-new', async (req, res) => {
   try {
     console.log('[API] Immediate new email scan triggered by email agent...');
+    clearMemoryCache();
     const result = await runSync(false);
     res.json({ success: true, message: 'New incoming email scan completed successfully', result });
   } catch (err) {

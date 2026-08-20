@@ -700,18 +700,33 @@ function App() {
     reader.readAsText(file);
   };
 
-  const [tenders, setTenders] = useState([]);
+  const loadLocalCache = (key, fallback) => {
+    try {
+      const saved = localStorage.getItem(key);
+      return saved ? JSON.parse(saved) : fallback;
+    } catch (e) {
+      return fallback;
+    }
+  };
+
+  const saveLocalCache = (key, data) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(data));
+    } catch (e) {}
+  };
+
+  const [tenders, setTenders] = useState(() => loadLocalCache('portal_cached_tenders', []));
   const [selectedTender, setSelectedTender] = useState(null);
   const [tenderEmails, setTenderEmails] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
 
-  const [status, setStatus] = useState({
+  const [status, setStatus] = useState(() => loadLocalCache('portal_cached_status', {
     sheetsAuth: false,
     database: false,
     dbFallbackActive: false,
     openaiKey: false,
     errors: {}
-  });
+  }));
 
   const [syncInfo, setSyncInfo] = useState({
     synced: false,
@@ -725,7 +740,7 @@ function App() {
   const [filterParticipated, setFilterParticipated] = useState(false);
   const [filterMatchedOnly, setFilterMatchedOnly] = useState(true);
   const [filterUrgentReplyOnly, setFilterUrgentReplyOnly] = useState(false);
-  const [recentMatches, setRecentMatches] = useState([]);
+  const [recentMatches, setRecentMatches] = useState(() => loadLocalCache('portal_cached_recent_matches', []));
   const [matchedEmailsTotal, setMatchedEmailsTotal] = useState(0);
   const [subStartDate, setSubStartDate] = useState('');
   const [subEndDate, setSubEndDate] = useState('');
@@ -1518,6 +1533,7 @@ function App() {
         // Handle both old (array) and new (paginated object) response formats
         const emails = Array.isArray(data) ? data : (data.emails || []);
         setRecentMatches(emails);
+        saveLocalCache('portal_cached_recent_matches', emails);
       }
     } catch (err) {
       if (err.name === 'AbortError') return;
@@ -1707,6 +1723,7 @@ function App() {
       if (res.ok) {
         const data = await res.json();
         setTenders(data);
+        saveLocalCache('portal_cached_tenders', data);
       } else {
         setTenders([]);
       }
