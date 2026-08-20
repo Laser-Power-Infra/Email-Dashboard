@@ -40,6 +40,8 @@ services:
       - ./Backend/data:/app/data
       - ./Backend/cache:/app/cache
       - ./:/app/root_config:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - match_net
 
@@ -53,6 +55,8 @@ services:
     volumes:
       - ./Emails_agent:/app
       - ./:/app/root_config:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - match_net
 

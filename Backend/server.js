@@ -672,7 +672,7 @@ async function initializeDatabase() {
       console.log(`Startup cleanup: Deleted ${delResult.affectedRows} matches from blacklisted senders.`);
     }
     
-    await conn.end();
+    releaseDbConnection(conn);
     console.log('Database tables initialized successfully.');
     
     // Diagnostic check for AI connectivity
@@ -850,6 +850,18 @@ async function fetchGoogleSheetTenders() {
 // ----------------------------------------------------
 // MySQL Client Setup
 // ----------------------------------------------------
+
+function releaseDbConnection(conn) {
+  if (!conn) return;
+  try {
+    if (typeof conn.release === 'function') {
+      conn.release();
+    } else if (typeof conn.end === 'function') {
+      releaseDbConnection(conn);
+    }
+  } catch (e) {}
+}
+
 let dbPool = null;
 
 function getDbPool() {
@@ -919,7 +931,7 @@ async function fetchEmailsFromDb(sinceDateOrId = null) {
   query += ` ORDER BY ${colId} DESC`;
 
   const [rows] = await conn.execute(query, queryParams);
-  await conn.end();
+  releaseDbConnection(conn);
   return rows;
 }
 
@@ -1531,7 +1543,7 @@ app.get('/api/status', async (req, res) => {
     const conn = await getDbConnection();
     const table = process.env.DB_TABLE || 'threads';
     await conn.query(`SELECT 1 FROM \`${table}\` LIMIT 1`);
-    await conn.end();
+    releaseDbConnection(conn);
     status.database = true;
   } catch (err) {
     status.errors.database = err.message;
@@ -1553,7 +1565,7 @@ app.get('/api/sync-info', async (req, res) => {
     const conn = await getDbConnection();
     const [rows] = await conn.query('SELECT COUNT(*) as count FROM tender_matches');
     matchesCount = rows[0].count;
-    await conn.end();
+    releaseDbConnection(conn);
   } catch (err) {
     console.error('Error fetching matches count from database:', err.message);
   }
@@ -1869,7 +1881,7 @@ async function runSync(forceFullSyncRequested = false) {
   } finally {
     isSyncing = false;
     if (conn) {
-      await conn.end();
+      releaseDbConnection(conn);
     }
   }
 }
@@ -1978,7 +1990,7 @@ app.get('/api/tenders', async (req, res) => {
     console.error('Error fetching database match counts:', err.message);
   } finally {
     if (conn) {
-      await conn.end();
+      releaseDbConnection(conn);
     }
   }
   
@@ -2132,7 +2144,7 @@ app.get('/api/tenders/:rowNumber/emails', async (req, res) => {
     res.status(500).json({ error: 'Failed to load matched emails', details: err.message });
   } finally {
     if (conn) {
-      await conn.end();
+      releaseDbConnection(conn);
     }
   }
 });
@@ -2193,14 +2205,14 @@ const { tenderStatusVal, replyDecision, deadline_date_val } = await buildMatched
     res.status(500).json({ error: 'Summarization failed', details: error.message });
   } finally {
     if (conn) {
-      await conn.end();
+      releaseDbConnection(conn);
     }
   }
 });
 
 // 7. Get Recent Matched Emails (across all tenders) for notifications and dashboard activity
 app.get('/api/recent-matches', async (req, res) => {
-  const { excludeTenderTiger, page = 1, limit = 1000 } = req.query;
+  const { excludeTenderTiger, page = 1, limit = 50 } = req.query;
   const isExclude = excludeTenderTiger === 'true';
   const pageNum = Math.max(1, Number(page));
   const limitNum = Math.min(2000, Math.max(1, Number(limit)));
@@ -2265,7 +2277,7 @@ app.get('/api/recent-matches', async (req, res) => {
     res.status(500).json({ error: 'Failed to load recent matches', details: err.message });
   } finally {
     if (conn) {
-      await conn.end();
+      releaseDbConnection(conn);
     }
   }
 });
@@ -2366,7 +2378,7 @@ app.get('/api/matched-emails', async (req, res) => {
     res.status(500).json({ error: 'Failed to load matched emails', details: err.message });
   } finally {
     if (conn) {
-      await conn.end();
+      releaseDbConnection(conn);
     }
   }
 });
@@ -2451,7 +2463,7 @@ AI Summary of Email: ${email.ai_summary || ''}`;
     res.status(500).json({ error: 'Failed to generate suggested reply', details: error.message });
   } finally {
     if (conn) {
-      await conn.end();
+      releaseDbConnection(conn);
     }
   }
 });
@@ -3225,7 +3237,7 @@ app.get('/api/all-emails', async (req, res) => {
         } catch (bgErr) {
           console.error('[Background Page Classification Failed]', bgErr.message);
         } finally {
-          if (backgroundConn) await backgroundConn.end();
+          if (backgroundConn) releaseDbConnection(backgroundConn);
         }
       })();
     }
@@ -3242,7 +3254,7 @@ app.get('/api/all-emails', async (req, res) => {
     const fallbackResult = filterFallbackEmails(req.query);
     res.json(fallbackResult);
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -3283,7 +3295,7 @@ app.get('/api/emails/:id', async (req, res) => {
     }
     res.json(email);
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -3520,7 +3532,7 @@ ${JSON.stringify(compactCandidates, null, 2)}`;
     }
   } finally {
     if (conn) {
-      await conn.end();
+      releaseDbConnection(conn);
     }
   }
 });
@@ -3559,7 +3571,7 @@ app.get('/api/labels', async (req, res) => {
     });
     res.json(Array.from(uniqueLabels).sort());
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -3811,7 +3823,7 @@ app.get('/api/codewords', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch codewords', details: err.message });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -3834,7 +3846,7 @@ app.post('/api/codewords', async (req, res) => {
     if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Duplicate codeword or combination already exists' });
     res.status(500).json({ error: 'Failed to create codeword', details: err.message });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -3853,7 +3865,7 @@ app.put('/api/codewords/:id', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: 'Failed to update codeword', details: err.message });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -3868,7 +3880,7 @@ app.delete('/api/codewords/:id', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete codeword', details: err.message });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -3887,7 +3899,7 @@ app.get('/api/matching-rules', async (req, res) => {
     console.error('Error fetching matching rules:', err.message);
     res.status(500).json({ error: 'Failed to fetch matching rules' });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -3909,7 +3921,7 @@ app.post('/api/matching-rules', async (req, res) => {
     console.error('Error adding matching rule:', err.message);
     res.status(500).json({ error: 'Failed to add matching rule' });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -3924,7 +3936,7 @@ app.delete('/api/matching-rules/:id', async (req, res) => {
     console.error('Error deleting matching rule:', err.message);
     res.status(500).json({ error: 'Failed to delete matching rule' });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -3971,7 +3983,7 @@ app.get('/api/sender-mappings', async (req, res) => {
     console.error('Error fetching sender mappings:', err.message);
     res.status(500).json({ error: 'Failed to fetch sender mappings' });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -3994,7 +4006,7 @@ app.post('/api/sender-mappings', async (req, res) => {
     console.error('Error creating sender mapping:', err.message);
     res.status(500).json({ error: 'Failed to create sender mapping' });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -4014,7 +4026,7 @@ app.put('/api/sender-mappings/:id', async (req, res) => {
     console.error('Error updating sender mapping:', err.message);
     res.status(500).json({ error: 'Failed to update sender mapping' });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -4029,7 +4041,7 @@ app.delete('/api/sender-mappings/:id', async (req, res) => {
     console.error('Error deleting sender mapping:', err.message);
     res.status(500).json({ error: 'Failed to delete sender mapping' });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -4073,7 +4085,7 @@ app.post('/api/sender-mappings/upload', uploadMiddleware.single('file'), async (
     console.error('Error uploading sender mappings:', err.message);
     res.status(500).json({ error: 'Failed to process uploaded file', details: err.message });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -4094,7 +4106,7 @@ app.get('/api/sender-categories', async (req, res) => {
     console.error('[Categories] Failed:', err.message);
     res.json([]);
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -4131,7 +4143,7 @@ app.get('/api/sender-subcategories', async (req, res) => {
     console.error('[Subcategories] Failed:', err.message);
     res.json([]);
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
@@ -4180,7 +4192,7 @@ app.get('/api/sender-companies', async (req, res) => {
     console.error('[Companies] Failed:', err.message);
     res.status(500).json({ error: err.message });
   } finally {
-    if (conn) await conn.end();
+    if (conn) releaseDbConnection(conn);
   }
 });
 
