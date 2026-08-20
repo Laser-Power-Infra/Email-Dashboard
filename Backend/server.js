@@ -643,6 +643,22 @@ async function initializeDatabase() {
       }
     }
 
+    try {
+      const threadsTable = process.env.DB_TABLE || 'threads';
+      await conn.query(`
+        ALTER TABLE \`${threadsTable}\`
+        ADD INDEX idx_threads_date (date)
+      `);
+    } catch (idxErr) {}
+
+    try {
+      const threadsTable = process.env.DB_TABLE || 'threads';
+      await conn.query(`
+        ALTER TABLE \`${threadsTable}\`
+        ADD INDEX idx_threads_sender (sender(100))
+      `);
+    } catch (idxErr) {}
+
     // Delete any existing matches for the blacklisted senders
     const deleteQuery = `
       DELETE tm FROM tender_matches tm
@@ -834,23 +850,35 @@ async function fetchGoogleSheetTenders() {
 // ----------------------------------------------------
 // MySQL Client Setup
 // ----------------------------------------------------
-async function getDbConnection() {
-  const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
-    port: Number(process.env.DB_PORT) || 3306,
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    connectTimeout: 10000,
-    enableKeepAlive: true,
-    keepAliveInitialDelay: 0
-  };
+let dbPool = null;
 
-  if (process.env.DB_SSL === 'true') {
-    dbConfig.ssl = { rejectUnauthorized: false };
+function getDbPool() {
+  if (!dbPool) {
+    const dbConfig = {
+      host: process.env.DB_HOST || 'localhost',
+      port: Number(process.env.DB_PORT) || 3306,
+      user: process.env.DB_USER || 'root',
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      waitForConnections: true,
+      connectionLimit: 30,
+      queueLimit: 0,
+      connectTimeout: 10000,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 0
+    };
+
+    if (process.env.DB_SSL === 'true') {
+      dbConfig.ssl = { rejectUnauthorized: false };
+    }
+
+    dbPool = mysql.createPool(dbConfig);
   }
+  return dbPool;
+}
 
-  return mysql.createConnection(dbConfig);
+async function getDbConnection() {
+  return getDbPool().getConnection();
 }
 
 // Fetches the body and OCR text. To support incremental sync, this query is also parameterizable.
