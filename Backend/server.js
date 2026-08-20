@@ -200,10 +200,29 @@ if (!fs.existsSync(DATA_DIR)) {
 const CACHE_FILE = path.join(DATA_DIR, 'sync_cache.json');
 let lastAiError = null; // Store last AI API error for frontend diagnosis
 
+function getOllamaBaseUrl() {
+  if (process.env.OLLAMA_BASE_URL) {
+    return process.env.OLLAMA_BASE_URL;
+  }
+  if (fs.existsSync('/.dockerenv')) {
+    return 'http://host.docker.internal:11434/v1';
+  }
+  return 'http://localhost:11434/v1';
+}
+
 // AI Client Resolver (supports Groq, local Ollama, and OpenAI)
 function getAiClient() {
-  const provider = process.env.AI_PROVIDER || 'ollama';
-  
+  let provider = process.env.AI_PROVIDER;
+  if (!provider) {
+    if (process.env.GROQ_API_KEY) {
+      provider = 'groq';
+    } else if (process.env.OPENAI_API_KEY) {
+      provider = 'openai';
+    } else {
+      provider = 'ollama';
+    }
+  }
+
   if (provider === 'openai') {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
@@ -211,7 +230,7 @@ function getAiClient() {
     }
     return {
       client: new OpenAI({ apiKey }),
-      model: process.env.OPENAI_MODEL || 'gpt-5-mini',
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
       provider
     };
   } else if (provider === 'groq') {
@@ -229,7 +248,7 @@ function getAiClient() {
     };
   } else {
     // Default to ollama
-    const baseURL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1';
+    const baseURL = getOllamaBaseUrl();
     const model = process.env.OLLAMA_MODEL || 'gemma4:e4b';
     return {
       client: new OpenAI({
@@ -816,16 +835,22 @@ async function fetchGoogleSheetTenders() {
 // MySQL Client Setup
 // ----------------------------------------------------
 async function getDbConnection() {
-  return mysql.createConnection({
+  const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
     port: Number(process.env.DB_PORT) || 3306,
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
-    ssl: {
-      rejectUnauthorized: false
-    }
-  });
+    connectTimeout: 10000,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0
+  };
+
+  if (process.env.DB_SSL === 'true') {
+    dbConfig.ssl = { rejectUnauthorized: false };
+  }
+
+  return mysql.createConnection(dbConfig);
 }
 
 // Fetches the body and OCR text. To support incremental sync, this query is also parameterizable.
