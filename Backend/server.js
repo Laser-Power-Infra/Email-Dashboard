@@ -200,6 +200,50 @@ if (!fs.existsSync(DATA_DIR)) {
 const CACHE_FILE = path.join(DATA_DIR, 'sync_cache.json');
 let lastAiError = null; // Store last AI API error for frontend diagnosis
 
+let dbPool = null;
+
+function getDbPool() {
+  if (!dbPool) {
+    const dbConfig = {
+      host: process.env.DB_HOST || 'localhost',
+      port: Number(process.env.DB_PORT) || 3306,
+      user: process.env.DB_USER || 'root',
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      waitForConnections: true,
+      connectionLimit: 30,
+      queueLimit: 0,
+      connectTimeout: 10000,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 0
+    };
+
+    if (process.env.DB_SSL === 'true') {
+      dbConfig.ssl = { rejectUnauthorized: false };
+    }
+
+    dbPool = mysql.createPool(dbConfig);
+  }
+  return dbPool;
+}
+
+async function getDbConnection() {
+  return getDbPool().getConnection();
+}
+
+function releaseDbConnection(conn) {
+  if (!conn) return;
+  try {
+    if (typeof conn.release === 'function') {
+      conn.release();
+    } else if (typeof conn.destroy === 'function') {
+      conn.destroy();
+    } else if (typeof conn.end === 'function') {
+      conn.end().catch(() => {});
+    }
+  } catch (e) {}
+}
+
 function getOllamaBaseUrl() {
   if (process.env.OLLAMA_BASE_URL) {
     return process.env.OLLAMA_BASE_URL;
@@ -847,51 +891,7 @@ async function fetchGoogleSheetTenders() {
   return response.data.values || [];
 }
 
-// ----------------------------------------------------
-// MySQL Client Setup
-// ----------------------------------------------------
 
-function releaseDbConnection(conn) {
-  if (!conn) return;
-  try {
-    if (typeof conn.release === 'function') {
-      conn.release();
-    } else if (typeof conn.end === 'function') {
-      releaseDbConnection(conn);
-    }
-  } catch (e) {}
-}
-
-let dbPool = null;
-
-function getDbPool() {
-  if (!dbPool) {
-    const dbConfig = {
-      host: process.env.DB_HOST || 'localhost',
-      port: Number(process.env.DB_PORT) || 3306,
-      user: process.env.DB_USER || 'root',
-      password: process.env.DB_PASSWORD,
-      database: process.env.DB_NAME,
-      waitForConnections: true,
-      connectionLimit: 30,
-      queueLimit: 0,
-      connectTimeout: 10000,
-      enableKeepAlive: true,
-      keepAliveInitialDelay: 0
-    };
-
-    if (process.env.DB_SSL === 'true') {
-      dbConfig.ssl = { rejectUnauthorized: false };
-    }
-
-    dbPool = mysql.createPool(dbConfig);
-  }
-  return dbPool;
-}
-
-async function getDbConnection() {
-  return getDbPool().getConnection();
-}
 
 // Fetches the body and OCR text. To support incremental sync, this query is also parameterizable.
 async function fetchEmailsFromDb(sinceDateOrId = null) {
