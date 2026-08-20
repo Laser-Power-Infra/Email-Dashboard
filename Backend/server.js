@@ -4090,9 +4090,11 @@ app.get('/api/sender-companies', async (req, res) => {
 });
 
 // Serve frontend assets in production (Vite builds to parent/dist)
-const distPath = fs.existsSync(path.join(__dirname, 'dist'))
-  ? path.join(__dirname, 'dist')
-  : path.join(__dirname, '..', 'dist');
+const distPath = fs.existsSync(path.join(__dirname, '..', 'frontend', 'dist'))
+  ? path.join(__dirname, '..', 'frontend', 'dist')
+  : (fs.existsSync(path.join(__dirname, 'dist'))
+      ? path.join(__dirname, 'dist')
+      : path.join(__dirname, '..', 'dist'));
 if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
   app.get('/*splat', (req, res) => {
