@@ -726,21 +726,38 @@ function extractReplyDecisionFromJson(str) {
 initializeDatabase();
 
 // ----------------------------------------------------
+function findAuthFile(filename) {
+  const candidates = [
+    path.join(__dirname, filename),
+    path.join(__dirname, '..', 'Emails_agent', filename),
+    path.join(process.cwd(), filename),
+    path.join(process.cwd(), 'Backend', filename)
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c) && fs.statSync(c).isFile()) {
+        return c;
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
 // Google Sheets Client Setup
 // ----------------------------------------------------
 async function getSheetsClient() {
-  const credentialsPath = path.join(__dirname, 'credentials.json');
-  const tokenPath = path.join(__dirname, 'token.json');
+  const credentialsPath = findAuthFile('credentials.json');
+  const tokenPath = findAuthFile('token.json');
 
-  if (!fs.existsSync(credentialsPath) || !fs.existsSync(tokenPath)) {
+  if (!credentialsPath || !tokenPath) {
     throw new Error('Google Sheets auth files (credentials.json and/or token.json) are missing in the project root.');
   }
 
-  const credentials = JSON.parse(fs.readFileSync(credentialsPath));
-  const token = JSON.parse(fs.readFileSync(tokenPath));
+  const credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
+  const token = JSON.parse(fs.readFileSync(tokenPath, 'utf8'));
 
   const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web;
-  const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
+  const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris ? redirect_uris[0] : 'http://localhost');
   oAuth2Client.setCredentials(token);
 
   return google.sheets({ version: 'v4', auth: oAuth2Client });
@@ -1421,9 +1438,9 @@ app.get('/api/status', async (req, res) => {
   }
 
   // Check sheets credentials
-  const credentialsPath = path.join(__dirname, 'credentials.json');
-  const tokenPath = path.join(__dirname, 'token.json');
-  if (fs.existsSync(credentialsPath) && fs.existsSync(tokenPath)) {
+  const credentialsPath = findAuthFile('credentials.json');
+  const tokenPath = findAuthFile('token.json');
+  if (credentialsPath && tokenPath) {
     try {
       await getSheetsClient();
       status.sheetsAuth = true;
