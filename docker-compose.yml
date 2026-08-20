@@ -9,7 +9,6 @@ services:
     container_name: match_emails_frontend
     restart: always
     ports:
-      - "80:6002"
       - "6002:6002"
     depends_on:
       - backend
