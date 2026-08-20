@@ -728,10 +728,10 @@ initializeDatabase();
 // ----------------------------------------------------
 function findAuthFile(filename) {
   const candidates = [
-    path.join(__dirname, filename),
-    path.join(__dirname, '..', 'Emails_agent', filename),
+    path.join(__dirname, '..', filename),
     path.join(process.cwd(), filename),
-    path.join(process.cwd(), 'Backend', filename)
+    path.join(process.cwd(), '..', filename),
+    path.join(__dirname, filename)
   ];
   for (const c of candidates) {
     try {

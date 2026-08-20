@@ -320,24 +320,39 @@ def safe_remove_path(path):
     except Exception as e:
         logger.warning(f"Could not remove path {path}: {e}")
 
+def find_root_auth_file(filename):
+    candidates = [
+        filename,
+        os.path.join("..", filename),
+        os.path.join(os.path.dirname(__file__), filename),
+        os.path.join(os.path.dirname(__file__), "..", filename)
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return filename
+
 def get_google_services():
     creds = None
-    if os.path.isdir("token.json"):
-        safe_remove_path("token.json")
-    if os.path.isdir("credentials.json"):
-        safe_remove_path("credentials.json")
+    token_file = find_root_auth_file("token.json")
+    creds_file = find_root_auth_file("credentials.json")
 
-    if os.path.isfile("token.json"):
+    if os.path.isdir(token_file):
+        safe_remove_path(token_file)
+    if os.path.isdir(creds_file):
+        safe_remove_path(creds_file)
+
+    if os.path.isfile(token_file):
         try:
-            creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+            creds = Credentials.from_authorized_user_file(token_file, SCOPES)
             if creds and creds.valid:
                 if not set(SCOPES).issubset(set(creds.scopes)):
                     logger.warning("Token scopes outdated. Re-authenticating...")
-                    safe_remove_path("token.json")
+                    safe_remove_path(token_file)
                     creds = None
         except Exception:
             logger.warning("Error loading token. Re-authenticating...")
-            safe_remove_path("token.json")
+            safe_remove_path(token_file)
             creds = None
 
     if not creds or not creds.valid:
@@ -346,14 +361,14 @@ def get_google_services():
                 creds.refresh(Request())
             except Exception:
                 logger.warning("Token refresh failed. Re-authenticating...")
-                safe_remove_path("token.json")
+                safe_remove_path(token_file)
                 creds = None
         if not creds:
-            if not os.path.isfile("credentials.json"):
-                raise FileNotFoundError("credentials.json is missing or not a valid file.")
-            flow  = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
+            if not os.path.isfile(creds_file):
+                raise FileNotFoundError(f"{creds_file} is missing or not a valid file.")
+            flow  = InstalledAppFlow.from_client_secrets_file(creds_file, SCOPES)
             creds = flow.run_local_server(port=0)
-        with open("token.json", "w") as token:
+        with open(token_file, "w") as token:
             token.write(creds.to_json())
         logger.info("New token saved.")
 

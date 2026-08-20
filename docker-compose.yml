@@ -37,8 +37,8 @@ services:
     volumes:
       - ./Backend/data:/app/data
       - ./Backend/cache:/app/cache
-      - ./Backend/credentials.json:/app/credentials.json
-      - ./Backend/token.json:/app/token.json
+      - ./credentials.json:/app/credentials.json
+      - ./token.json:/app/token.json
     networks:
       - match_net
 
@@ -51,6 +51,8 @@ services:
     restart: always
     volumes:
       - ./Emails_agent:/app
+      - ./credentials.json:/app/credentials.json
+      - ./token.json:/app/token.json
     networks:
       - match_net
 
