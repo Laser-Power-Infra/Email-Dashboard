@@ -2216,6 +2216,19 @@ function App() {
               >
                 Light Pink
               </button>
+
+              {status.sheetId && (
+                <a
+                  href={status.sheetUrl || `https://docs.google.com/spreadsheets/d/${status.sheetId}/edit#gid=${status.sheetGid || 0}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-secondary"
+                  style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', padding: '0.4rem 0.75rem' }}
+                  title="Open synced Google Sheet in new tab"
+                >
+                  <ExternalLink size={14} /> Open Google Sheet
+                </a>
+              )}
             </div>
             {activeTab === 'tenders' && (
               <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'center' }}>
@@ -3011,6 +3024,18 @@ function App() {
                         {status.sheetId}
                       </div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>GID Tab: {status.sheetGid}</div>
+                      {status.sheetId && (
+                        <div style={{ marginTop: '0.25rem' }}>
+                          <a
+                            href={status.sheetUrl || `https://docs.google.com/spreadsheets/d/${status.sheetId}/edit#gid=${status.sheetGid || 0}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ color: 'var(--color-primary-light)', fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem', textDecoration: 'underline', fontWeight: 600 }}
+                          >
+                            Open Sheet in Browser <ExternalLink size={12} />
+                          </a>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

@@ -1410,6 +1410,9 @@ app.get('/api/status', async (req, res) => {
     dbTable: process.env.DB_TABLE || 'threads',
     sheetId: process.env.GOOGLE_SPREADSHEET_ID,
     sheetGid: process.env.GOOGLE_SHEET_GID,
+    sheetUrl: process.env.GOOGLE_SPREADSHEET_ID
+      ? `https://docs.google.com/spreadsheets/d/${process.env.GOOGLE_SPREADSHEET_ID}/edit#gid=${process.env.GOOGLE_SHEET_GID || 0}`
+      : null,
     errors: {}
   };
 
