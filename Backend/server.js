@@ -10,8 +10,20 @@ const dotenv = require('dotenv');
 const multer = require('multer');
 const xlsx = require('xlsx');
 
-// Load environment variables
-dotenv.config();
+// Load environment variables from multiple candidate locations
+const envPaths = [
+  path.join(__dirname, '.env'),
+  path.join(__dirname, '..', '.env'),
+  path.join(process.cwd(), '.env'),
+  path.join('/app', 'root_config', '.env')
+];
+for (const envP of envPaths) {
+  try {
+    if (fs.existsSync(envP)) {
+      dotenv.config({ path: envP });
+    }
+  } catch (e) {}
+}
 
 const { extractTenderTokens, checkMatch, checkMatchNormalized, checkMatchCompiled, makeTokenRegex } = require('./matcher');
 const { shouldUseFullSync } = require('./syncStrategy');
@@ -786,8 +798,8 @@ async function getSheetTitleByGid(sheets, spreadsheetId, gid) {
 
 async function fetchGoogleSheetTenders() {
   const sheets = await getSheetsClient();
-  const spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID;
-  const gid = process.env.GOOGLE_SHEET_GID;
+  const spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || '1GTwzxMgViohbCimXqfiBZBJsKbCSr7hCgbcHF_En1VE';
+  const gid = process.env.GOOGLE_SHEET_GID || '1274623128';
 
   const title = await getSheetTitleByGid(sheets, spreadsheetId, gid);
   const range = `${title}!A:AG`; // Fetch up to column 33 (AG)
@@ -1437,11 +1449,9 @@ app.get('/api/status', async (req, res) => {
     dbHost: process.env.DB_HOST || 'localhost',
     dbName: process.env.DB_NAME || 'defaultdb',
     dbTable: process.env.DB_TABLE || 'threads',
-    sheetId: process.env.GOOGLE_SPREADSHEET_ID,
-    sheetGid: process.env.GOOGLE_SHEET_GID,
-    sheetUrl: process.env.GOOGLE_SPREADSHEET_ID
-      ? `https://docs.google.com/spreadsheets/d/${process.env.GOOGLE_SPREADSHEET_ID}/edit#gid=${process.env.GOOGLE_SHEET_GID || 0}`
-      : null,
+    sheetId: process.env.GOOGLE_SPREADSHEET_ID || '1GTwzxMgViohbCimXqfiBZBJsKbCSr7hCgbcHF_En1VE',
+    sheetGid: process.env.GOOGLE_SHEET_GID || '1274623128',
+    sheetUrl: `https://docs.google.com/spreadsheets/d/${process.env.GOOGLE_SPREADSHEET_ID || '1GTwzxMgViohbCimXqfiBZBJsKbCSr7hCgbcHF_En1VE'}/edit#gid=${process.env.GOOGLE_SHEET_GID || '1274623128'}`,
     errors: {}
   };
 
