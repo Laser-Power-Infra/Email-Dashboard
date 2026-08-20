@@ -1700,89 +1700,81 @@ def process_gmail_batch(
         'last_thread_id':    batch_threads[-1]["id"] if batch_threads else None,
     }
 
+def load_processed_thread_ids():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT thread_id FROM threads WHERE thread_id IS NOT NULL AND thread_id != ''")
+        ids = set(row[0] for row in cursor.fetchall())
+        conn.close()
+        return ids
+    except Exception as e:
+        logger.warning(f"Could not load processed thread_ids from DB: {e}")
+        return set()
+
 # -----------------------------------------------------------------------
-# CONTINUOUS RUN  (FIX 8: resume by thread_id, not numeric index)
+# CONTINUOUS RUN  (Filter already processed thread_ids from DB)
 # -----------------------------------------------------------------------
 def run_continuous():
     logger.info("="*70)
-    logger.info("Starting enhanced continuous Gmail pipeline")
+    logger.info("Starting enhanced continuous Gmail listener pipeline")
     logger.info("="*70)
 
     init_db()
-    setup_conn = get_db_connection()
     gmail_service, drive_service = get_google_services()
-    email_map = load_all_email_mapping(setup_conn)
-    status = get_processing_status(setup_conn)
-    setup_conn.close()
 
-    # FIX 8: resume from last known thread_id rather than a stale numeric index
-    resume_thread_id = None
-    if status and status.get('status') in ('running', 'partial'):
-        resume_thread_id = status.get('last_thread_id')
-        logger.info(
-            f"Resuming after thread_id={resume_thread_id} "
-            f"(previous important={status.get('important_threads', 0)})"
-        )
-    else:
-        logger.info("Starting fresh.")
+    processed_thread_ids = load_processed_thread_ids()
+    logger.info(f"Loaded {len(processed_thread_ids)} existing processed threads from database.")
 
-    batch_number   = 1
+    batch_number = 1
     total_important = 0
 
     while True:
         try:
-            logger.info(f"\n{'#'*70}\nBATCH #{batch_number}\n{'#'*70}\n")
+            # Re-query DB for any newly added thread_ids
+            latest_db_ids = load_processed_thread_ids()
+            processed_thread_ids.update(latest_db_ids)
 
-            # Re-fetch thread list each cycle so additions/deletions are respected
+            setup_conn = get_db_connection()
+            email_map = load_all_email_mapping(setup_conn)
+            setup_conn.close()
+
+            # Search Gmail API for threads matching search query
             all_threads = search_threads(gmail_service, SEARCH_QUERY)
-            logger.info(f"Found {len(all_threads)} threads total.")
+            
+            # Filter ONLY threads that are not yet processed in DB
+            unprocessed_threads = [t for t in all_threads if t["id"] not in processed_thread_ids]
 
-            start_index = 0
-            if resume_thread_id:
-                ids = [t["id"] for t in all_threads]
-                if resume_thread_id in ids:
-                    # start after the last processed thread
-                    start_index = ids.index(resume_thread_id) + 1
-                else:
-                    logger.warning(
-                        f"Resume thread_id {resume_thread_id} not found in current list; "
-                        f"starting from beginning."
-                    )
-                    start_index = 0
-                resume_thread_id = None   # only use on first iteration
-
-            if start_index >= len(all_threads):
-                logger.info("All existing threads processed. Listening for new incoming emails...")
+            if not unprocessed_threads:
+                logger.info(f"All {len(all_threads)} threads up-to-date. Listening for new incoming emails...")
                 time.sleep(15)
                 continue
 
+            logger.info(f"\n{'#'*70}\nBATCH #{batch_number}: Processing {len(unprocessed_threads)} new incoming threads (out of {len(all_threads)} total)\n{'#'*70}\n")
+
             result = process_gmail_batch(
                 gmail_service, drive_service,
-                all_threads, email_map,
-                start_index=start_index, batch_size=BATCH_SIZE
+                unprocessed_threads, email_map,
+                start_index=0, batch_size=BATCH_SIZE
             )
             total_important += result.get('batch_important', 0)
             logger.info(f"Cumulative important: {total_important}")
 
-            resume_thread_id = result.get('last_thread_id')
-            batch_number    += 1
+            # Mark all processed threads in set
+            for t in unprocessed_threads:
+                processed_thread_ids.add(t["id"])
 
-            if not result['continue']:
-                logger.info(
-                    f"\n{'*'*70}\nAll current batch threads processed. Checking for new incoming emails in 15s...\n{'*'*70}\n"
-                )
-                time.sleep(15)
-            else:
-                logger.info("Waiting 10 s before next batch…")
-                time.sleep(10)
+            batch_number += 1
+            logger.info("Checking for new incoming emails in 15s...")
+            time.sleep(15)
 
         except KeyboardInterrupt:
             logger.info(f"\nInterrupted. Total important so far: {total_important}")
             break
         except Exception as e:
             logger.error(f"Batch error: {e}", exc_info=True)
-            logger.info("Waiting 60 s before retry…")
-            time.sleep(60)
+            logger.info("Waiting 30s before retry...")
+            time.sleep(30)
 
 # -----------------------------------------------------------------------
 # REPORTING  (FIX 14: returns data cleanly; caller prints)
