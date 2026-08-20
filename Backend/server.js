@@ -88,6 +88,16 @@ const COMPANY_KEYWORD_MAP = [
   { company: 'BHUVEE', keywords: ['bhuvee'] }
 ];
 
+const COMPANY_KEYWORD_PATTERNS = [
+  /laser/i,
+  /uic/i,
+  /gmd/i,
+  /ceebuild/i,
+  /dailmer/i,
+  /maxcab/i,
+  /bhuvee/i
+];
+
 function fallbackCompanyFromEmail(email) {
   if (!email) return '';
   const clean = String(email).toLowerCase().trim();
