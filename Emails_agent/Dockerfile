@@ -25,4 +25,4 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 
 # Command to run continuous email ingestion pipeline
-CMD ["python", "claude_Oracel_db.py", "--continuous"]
+CMD ["python", "claude_Oracel_db.py", "--mode", "continuous"]

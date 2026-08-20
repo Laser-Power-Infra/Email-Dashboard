@@ -1787,6 +1787,7 @@ if __name__ == "__main__":
     parser.add_argument('--mode', choices=['single', 'continuous', 'report', 'backfill-recipients',
                                            'reassign-company'],
                         default='continuous')
+    parser.add_argument('--continuous', action='store_true', help='Alias for --mode continuous')
     parser.add_argument('--batch-size',   type=int, default=500)
     parser.add_argument('--search-query', type=str, default=None)
     parser.add_argument('--source', choices=['body', 'gmail', 'all'], default='all',
@@ -1794,6 +1795,9 @@ if __name__ == "__main__":
     parser.add_argument('--limit', type=int, default=None,
                         help='max rows to process for backfill-recipients')
     args = parser.parse_args()
+
+    if args.continuous:
+        args.mode = 'continuous'
 
     BATCH_SIZE = args.batch_size
     if args.search_query:
