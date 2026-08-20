@@ -738,6 +738,8 @@ initializeDatabase();
 // ----------------------------------------------------
 function findAuthFile(filename) {
   const candidates = [
+    path.join(__dirname, 'root_config', filename),
+    path.join('/app', 'root_config', filename),
     path.join(__dirname, '..', filename),
     path.join(process.cwd(), filename),
     path.join(process.cwd(), '..', filename),

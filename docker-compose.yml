@@ -37,6 +37,7 @@ services:
     volumes:
       - ./Backend/data:/app/data
       - ./Backend/cache:/app/cache
+      - ./:/app/root_config:ro
     networks:
       - match_net
 
@@ -49,6 +50,7 @@ services:
     restart: always
     volumes:
       - ./Emails_agent:/app
+      - ./:/app/root_config:ro
     networks:
       - match_net
 

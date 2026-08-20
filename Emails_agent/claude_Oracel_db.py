@@ -322,6 +322,8 @@ def safe_remove_path(path):
 
 def find_root_auth_file(filename):
     candidates = [
+        os.path.join("root_config", filename),
+        os.path.join("/app", "root_config", filename),
         filename,
         os.path.join("..", filename),
         os.path.join(os.path.dirname(__file__), filename),
