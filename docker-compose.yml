@@ -48,9 +48,7 @@ services:
     container_name: match_emails_agent
     restart: always
     volumes:
-      - ./Emails_agent/credentials.json:/app/credentials.json
-      - ./Emails_agent/token.json:/app/token.json
-      - ./Emails_agent/config.ini:/app/config.ini
+      - ./Emails_agent:/app
     networks:
       - match_net
 

@@ -310,20 +310,34 @@ def init_db():
 # -----------------------------------------------------------------------
 # GOOGLE API AUTH
 # -----------------------------------------------------------------------
+def safe_remove_path(path):
+    try:
+        if os.path.isdir(path):
+            import shutil
+            shutil.rmtree(path)
+        elif os.path.exists(path):
+            os.remove(path)
+    except Exception as e:
+        logger.warning(f"Could not remove path {path}: {e}")
+
 def get_google_services():
     creds = None
-    if os.path.exists("token.json"):
+    if os.path.isdir("token.json"):
+        safe_remove_path("token.json")
+    if os.path.isdir("credentials.json"):
+        safe_remove_path("credentials.json")
+
+    if os.path.isfile("token.json"):
         try:
             creds = Credentials.from_authorized_user_file("token.json", SCOPES)
             if creds and creds.valid:
                 if not set(SCOPES).issubset(set(creds.scopes)):
                     logger.warning("Token scopes outdated. Re-authenticating...")
-                    os.remove("token.json")
+                    safe_remove_path("token.json")
                     creds = None
         except Exception:
             logger.warning("Error loading token. Re-authenticating...")
-            if os.path.exists("token.json"):
-                os.remove("token.json")
+            safe_remove_path("token.json")
             creds = None
 
     if not creds or not creds.valid:
@@ -332,10 +346,11 @@ def get_google_services():
                 creds.refresh(Request())
             except Exception:
                 logger.warning("Token refresh failed. Re-authenticating...")
-                if os.path.exists("token.json"):
-                    os.remove("token.json")
+                safe_remove_path("token.json")
                 creds = None
         if not creds:
+            if not os.path.isfile("credentials.json"):
+                raise FileNotFoundError("credentials.json is missing or not a valid file.")
             flow  = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
             creds = flow.run_local_server(port=0)
         with open("token.json", "w") as token:
