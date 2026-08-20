@@ -1,0 +1,27 @@
+# Node & Python Dependencies
+node_modules/
+__pycache__/
+*.pyc
+
+# Environment & Credentials Secrets
+.env
+.env.*
+*.env
+credentials.json
+token.json
+token.pickle
+Emails_agent/credentials.json
+Emails_agent/token.json
+Backend/credentials.json
+Backend/.env
+
+# Build outputs & Logs
+dist/
+*.log
+Emails_agent/*.log
+
+# Local data & caches
+Backend/data/
+Backend/cache/
+data/
+scratch/

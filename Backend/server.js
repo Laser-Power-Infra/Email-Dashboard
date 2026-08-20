@@ -1,0 +1,4148 @@
+const express = require('express');
+const nodemailer = require('nodemailer');
+const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+const mysql = require('mysql2/promise');
+const { google } = require('googleapis');
+const { OpenAI } = require('openai');
+const dotenv = require('dotenv');
+const multer = require('multer');
+const xlsx = require('xlsx');
+
+// Load environment variables
+dotenv.config();
+
+const { extractTenderTokens, checkMatch, checkMatchNormalized, checkMatchCompiled, makeTokenRegex } = require('./matcher');
+const { shouldUseFullSync } = require('./syncStrategy');
+
+const COMPANY_CANON = {
+  laser: 'Laser', gmd: 'GMD', uic: 'UIC', ceebuild: 'CEEBUILD',
+  dailmer: 'DAILMER', maxcab: 'MAXCAB', bhuvee: 'BHUVEE',
+  common: 'COMMON', outsider: 'OUTSIDER',
+};
+
+function parseCompanies(companyStr) {
+  if (!companyStr) return ['OUTSIDER'];
+  const seen = new Set();
+  const out = [];
+  for (const raw of String(companyStr).split(/[,\/]+/)) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    const canonical = COMPANY_CANON[key]
+      || (trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase());
+    if (!seen.has(canonical.toLowerCase())) {
+      seen.add(canonical.toLowerCase());
+      out.push(canonical);
+    }
+  }
+  return out.length ? out : ['OUTSIDER'];
+}
+
+const COMPANY_PRIORITY = ['Laser', 'UIC', 'GMD', 'CEEBUILD', 'DAILMER', 'MAXCAB', 'BHUVEE', 'COMMON'];
+
+function canonicalCompany(raw) {
+  if (!raw) return '';
+  const parts = String(raw).split(/[,\/]+/).map(s => s.trim()).filter(Boolean);
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) {
+    const c = COMPANY_CANON[p.toLowerCase()] || (p.charAt(0).toUpperCase() + p.slice(1).toLowerCase());
+    if (!seen.has(c.toLowerCase())) {
+      seen.add(c.toLowerCase());
+      out.push(c);
+    }
+  }
+  return out.join(',');
+}
+
+function pickPrimaryCompany(companyStr) {
+  const parts = String(companyStr || '').split(',').map(s => s.trim()).filter(Boolean);
+  for (const p of COMPANY_PRIORITY) {
+    if (parts.includes(p)) return p;
+  }
+  return parts[0] || 'Outsider';
+}
+
+const COMPANY_DOMAIN_MAP = {
+  'laserpowerinfra.com': 'Laser',
+  'lasercables.com': 'Laser',
+  'uicwires.com': 'UIC',
+  'uicudyog.com': 'UIC',
+  'uicinfra.com': 'UIC',
+  'gmdalui.co.in': 'GMD',
+  'ceebuildcompany.com': 'CEEBUILD',
+  'dailmerindustries.com': 'DAILMER',
+  'maxcabindustries.com': 'MAXCAB',
+  'bhuveestenovate.com': 'BHUVEE',
+};
+
+const COMPANY_KEYWORD_MAP = [
+  { company: 'Laser', keywords: ['laserpower', 'lasercables', 'laser power'] },
+  { company: 'UIC', keywords: ['uic udyog', 'uic wires', 'uicinfra', 'uicdutta', 'uic'] },
+  { company: 'GMD', keywords: ['gmdalui', 'gmd'] },
+  { company: 'CEEBUILD', keywords: ['ceebuild'] },
+  { company: 'DAILMER', keywords: ['dailmer'] },
+  { company: 'MAXCAB', keywords: ['maxcab'] },
+  { company: 'BHUVEE', keywords: ['bhuvee'] }
+];
+
+function fallbackCompanyFromEmail(email) {
+  if (!email) return '';
+  const clean = String(email).toLowerCase().trim();
+  if (clean.includes('puja.agarwal')) return ''; // Strict blacklist guard
+  
+  const dom = clean.split('@').pop() || '';
+  if (COMPANY_DOMAIN_MAP[dom]) return COMPANY_DOMAIN_MAP[dom];
+
+  // Inspect username/local-part keywords (e.g. samiran.purchase_laserpower@outlook.com -> Laser)
+  for (const item of COMPANY_KEYWORD_MAP) {
+    if (item.keywords.some(kw => clean.includes(kw))) {
+      return item.company;
+    }
+  }
+  return '';
+}
+
+function resolveCompanyFromSubject(subject) {
+  if (!subject) return '';
+  const clean = String(subject).toLowerCase();
+  for (const item of COMPANY_KEYWORD_MAP) {
+    if (item.keywords.some(kw => clean.includes(kw))) {
+      return item.company;
+    }
+  }
+  return '';
+}
+
+function computeFallbackCompany(sender, toDetails, ccDetails, subject) {
+  const toEmails = extractEmailAddresses(toDetails);
+  for (const e of toEmails) {
+    const c = fallbackCompanyFromEmail(e);
+    if (c) return c;
+  }
+  const senderEmails = extractEmailAddresses(sender);
+  for (const e of senderEmails) {
+    const c = fallbackCompanyFromEmail(e);
+    if (c) return c;
+  }
+  const ccEmails = extractEmailAddresses(ccDetails);
+  for (const e of ccEmails) {
+    const c = fallbackCompanyFromEmail(e);
+    if (c) return c;
+  }
+  return resolveCompanyFromSubject(subject) || '';
+}
+
+function getUtcRangeForIstDates(startDateStr, endDateStr) {
+  let startUtc = null;
+  let endUtc = null;
+
+  if (startDateStr) {
+    const sClean = String(startDateStr).split(' ')[0].trim();
+    const dStart = new Date(`${sClean}T00:00:00.000+05:30`);
+    if (!isNaN(dStart.getTime())) {
+      startUtc = dStart.toISOString().replace('T', ' ').replace('Z', '');
+    } else {
+      startUtc = `${sClean} 00:00:00`;
+    }
+  }
+
+  if (endDateStr) {
+    const eClean = String(endDateStr).split(' ')[0].trim();
+    const dEnd = new Date(`${eClean}T23:59:59.999+05:30`);
+    if (!isNaN(dEnd.getTime())) {
+      endUtc = dEnd.toISOString().replace('T', ' ').replace('Z', '');
+    } else {
+      endUtc = `${eClean} 23:59:59`;
+    }
+  }
+
+  return { startUtc, endUtc };
+}
+
+const app = express();
+const PORT = process.env.PORT || 6003;
+console.log(`Starting Tender Email Sync Server on port ${PORT}...`);
+
+app.use(cors());
+app.use(express.json());
+
+// Directories setup
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR);
+}
+
+const CACHE_FILE = path.join(DATA_DIR, 'sync_cache.json');
+let lastAiError = null; // Store last AI API error for frontend diagnosis
+
+// AI Client Resolver (supports Groq, local Ollama, and OpenAI)
+function getAiClient() {
+  const provider = process.env.AI_PROVIDER || 'ollama';
+  
+  if (provider === 'openai') {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return { client: null, model: null, provider, error: 'No OPENAI_API_KEY set in .env file.' };
+    }
+    return {
+      client: new OpenAI({ apiKey }),
+      model: process.env.OPENAI_MODEL || 'gpt-5-mini',
+      provider
+    };
+  } else if (provider === 'groq') {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      return { client: null, model: null, provider, error: 'No GROQ_API_KEY set in .env file.' };
+    }
+    return {
+      client: new OpenAI({
+        baseURL: process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1',
+        apiKey: apiKey
+      }),
+      model: process.env.GROQ_MODEL || 'groq/compound-mini',
+      provider
+    };
+  } else {
+    // Default to ollama
+    const baseURL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1';
+    const model = process.env.OLLAMA_MODEL || 'gemma4:e4b';
+    return {
+      client: new OpenAI({
+        baseURL,
+        apiKey: 'ollama' // Placeholder apiKey required by OpenAI SDK client
+      }),
+      model,
+      provider
+    };
+  }
+}
+
+// NOTE: Analytics AI calls now use callChatCompletionsWithFallback (defined below)
+// which automatically cycles Groq models on rate-limit, then Ollama as last resort.
+
+// AI escape hatch: set AI_ANALYTICS_ENABLED=false to skip all AI calls and use rule-based results only.
+function aiAnalyticsEnabled() {
+  return process.env.AI_ANALYTICS_ENABLED !== 'false';
+}
+
+// Centralized completion helper with automatic model/provider fallback on failure (e.g., 429 rate limits)
+async function callChatCompletionsWithFallback(payload) {
+  const { client, model, provider, error } = getAiClient();
+  if (error || !client) {
+    throw new Error(error || 'AI client not initialized.');
+  }
+
+  // Build the execution chain
+  const chain = [];
+
+  // 1. Primary: configured client and model
+  chain.push({
+    client,
+    model: payload.model || model,
+    provider,
+    label: `${provider} - ${payload.model || model}`
+  });
+
+  // 2. Fallbacks for Groq: active supported models
+  if (provider === 'groq') {
+    const primaryModel = payload.model || model;
+    const groqModels = [
+      primaryModel,
+      'groq/compound-mini',
+      'groq/compound',
+      'openai/gpt-oss-120b'
+    ];
+    const seen = new Set();
+    for (const m of groqModels) {
+      if (seen.has(m)) continue;
+      seen.add(m);
+      chain.push({ client, model: m, provider: 'groq', label: `groq - ${m}` });
+    }
+
+    // OpenAI (if API key is available in environment)
+    if (process.env.OPENAI_API_KEY) {
+      const openAiModel = process.env.OPENAI_MODEL || 'gpt-5-mini';
+      chain.push({
+        client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
+        model: openAiModel,
+        provider: 'openai',
+        label: `openai - ${openAiModel} (fallback)`
+      });
+    }
+
+    // Local Ollama
+    chain.push({
+      client: new OpenAI({
+        baseURL: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
+        apiKey: 'ollama'
+      }),
+      model: process.env.OLLAMA_MODEL || 'gemma4:e4b',
+      provider: 'ollama',
+      label: `ollama - ${process.env.OLLAMA_MODEL || 'gemma4:e4b'} (fallback)`
+    });
+  } else if (provider === 'openai') {
+    // If OpenAI is primary, also try Groq as fallback (free, no max_tokens issues)
+    if (process.env.GROQ_API_KEY) {
+      const groqModels = [
+        process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+        'llama-3.1-8b-instant'
+      ];
+      const seen = new Set();
+      for (const m of groqModels) {
+        if (seen.has(m)) continue;
+        seen.add(m);
+        chain.push({
+          client: new OpenAI({
+            baseURL: process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1',
+            apiKey: process.env.GROQ_API_KEY
+          }),
+          model: m,
+          provider: 'groq',
+          label: `groq - ${m} (fallback)`
+        });
+      }
+    }
+    // Local Ollama as last resort
+    chain.push({
+      client: new OpenAI({
+        baseURL: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
+        apiKey: 'ollama'
+      }),
+      model: process.env.OLLAMA_MODEL || 'gemma4:e4b',
+      provider: 'ollama',
+      label: `ollama - ${process.env.OLLAMA_MODEL || 'gemma4:e4b'} (fallback)`
+    });
+  }
+
+  let lastErr = null;
+  for (let i = 0; i < chain.length; i++) {
+    const attempt = chain[i];
+    try {
+      if (i > 0) {
+        console.log(`[AI Fallback Chain] Swapping to fallback attempt ${i}: ${attempt.label}`);
+      }
+
+      // Build provider-aware payload
+      // OpenAI o-series / gpt-5-mini use max_completion_tokens instead of max_tokens
+      const isOpenAiProvider = attempt.provider === 'openai';
+      const basePayload = { ...payload, model: attempt.model };
+      if (isOpenAiProvider && basePayload.max_tokens !== undefined) {
+        basePayload.max_completion_tokens = basePayload.max_tokens;
+        delete basePayload.max_tokens;
+      }
+      // Enforce minimum token usage (cap at 150 to save quota)
+      if (basePayload.max_completion_tokens !== undefined) {
+        basePayload.max_completion_tokens = Math.min(basePayload.max_completion_tokens, 150);
+      }
+      if (basePayload.max_tokens !== undefined) {
+        basePayload.max_tokens = Math.min(basePayload.max_tokens, 150);
+      }
+
+      const completion = await attempt.client.chat.completions.create(basePayload);
+      lastAiError = null; // Clear error on successful execution
+      return completion;
+    } catch (err) {
+      const isRateLimit = err.status === 429 || (err.message && (err.message.includes('429') || err.message.toLowerCase().includes('rate limit') || err.message.includes('Limit') || err.message.includes('TPD') || err.message.includes('TPM')));
+      console.warn(`[AI Call Failure] ${attempt.label} failed: ${err.message}. Rate limit detected: ${isRateLimit}`);
+      lastErr = err;
+      lastAiError = err.message;
+      // Backoff on rate limit before trying the next model/provider
+      if (isRateLimit) {
+        const backoffMs = Math.min(3000 * (i + 1), 15000);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+      }
+    }
+  }
+
+  throw lastErr || new Error('All AI providers in the fallback chain failed.');
+}
+
+// AI-based email category classifier (Sales/Legal only — everything else is Other)
+async function getEmailAiClassification(subject, body) {
+  const cleanBody = (body || '').replace(/<[^>]*>/g, '').substring(0, 1500);
+  const prompt = `Classify this email as Sales, Legal, or Other.
+Sales: RFQs, tenders, quotations, business proposals, purchase enquiries.
+Legal: legal notices, NCLT, court cases, arbitration, compliance, contracts, disputes.
+Other: anything not Sales or Legal.
+Return JSON: {"category":"Sales|Legal|Other","sub_category":"...","reason":"..."}
+Subject: ${subject}\nBody: ${cleanBody}`;
+
+  try {
+    const completion = await callChatCompletionsWithFallback({
+      messages: [
+        { role: 'system', content: 'You are an expert email classifier. Respond with strict JSON only.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 100,
+      temperature: 0
+    });
+
+    const content = completion?.choices?.[0]?.message?.content?.trim();
+    if (!content) return null;
+
+    const match = content.match(/\{[\s\S]*?\}/);
+    if (match) {
+      const parsed = JSON.parse(match[0]);
+      if (parsed.category) {
+        return {
+          category: parsed.category.trim(),
+          sub_category: parsed.sub_category ? parsed.sub_category.trim() : '',
+          confidence: parsed.confidence_score,
+          reason: parsed.reason
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[Analytics Classification] AI call failed:', err.message);
+  }
+  return null;
+}
+
+// Helpers for reading/writing cache
+function readCache(file, defaultValue = {}) {
+  if (fs.existsSync(file)) {
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf-8'));
+    } catch (e) {
+      console.error(`Error reading cache file ${file}:`, e);
+    }
+  }
+  return defaultValue;
+}
+
+function writeCache(file, data) {
+  try {
+    fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (e) {
+    console.error(`Error writing cache file ${file}:`, e);
+  }
+}
+
+// Ensure database tables exist on server start
+async function initializeDatabase() {
+  try {
+    const conn = await getDbConnection();
+    console.log('Initializing database tables...');
+    
+    // Create tender_matches if not exists
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS tender_matches (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        docket_no VARCHAR(100),
+        tender_no VARCHAR(255),
+        thread_db_id INT,
+        thread_id VARCHAR(255),
+        matched_token VARCHAR(255),
+        confidence VARCHAR(50),
+        matched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_match (docket_no, tender_no, thread_db_id)
+      )
+    `);
+
+    // Create matching_rules if not exists
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS matching_rules (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        rule TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create sender_company_mapping if not exists
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS sender_company_mapping (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        sender_name VARCHAR(255) NOT NULL,
+        companies TEXT NOT NULL,
+        category VARCHAR(100) DEFAULT NULL,
+        sub_category VARCHAR(100) DEFAULT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Add tender_status column if it doesn't exist
+    try {
+      await conn.query(`
+        ALTER TABLE tender_matches 
+        ADD COLUMN tender_status VARCHAR(100) DEFAULT NULL
+      `);
+      console.log('Added tender_status column to tender_matches table.');
+    } catch (colErr) {
+      if (colErr.code !== 'ER_DUP_FIELDNAME' && !colErr.message.includes('duplicate column')) {
+        console.error('Failed to add tender_status column:', colErr.message);
+      }
+    }
+
+    try {
+      await conn.query(`
+        ALTER TABLE tender_matches
+        ADD COLUMN reply_required TINYINT(1) DEFAULT 0
+      `);
+      console.log('Added reply_required column to tender_matches table.');
+    } catch (colErr) {
+      if (colErr.code !== 'ER_DUP_FIELDNAME' && !colErr.message.includes('duplicate column')) {
+        console.error('Failed to add reply_required column:', colErr.message);
+      }
+    }
+
+    try {
+      await conn.query(`
+        ALTER TABLE tender_matches
+        ADD COLUMN reply_reason VARCHAR(255) DEFAULT NULL
+      `);
+      console.log('Added reply_reason column to tender_matches table.');
+    } catch (colErr) {
+      if (colErr.code !== 'ER_DUP_FIELDNAME' && !colErr.message.includes('duplicate column')) {
+        console.error('Failed to add reply_reason column:', colErr.message);
+      }
+    }
+
+    try {
+      await conn.query(`
+        ALTER TABLE tender_matches
+        ADD COLUMN deadline_date DATETIME DEFAULT NULL
+      `);
+      console.log('Added deadline_date column to tender_matches table.');
+    } catch (colErr) {
+      if (colErr.code !== 'ER_DUP_FIELDNAME' && !colErr.message.includes('duplicate column')) {
+        console.error('Failed to add deadline_date column:', colErr.message);
+      }
+    }
+
+    // Ensure thread_db_id is INT to match threads.id for join performance
+    try {
+      await conn.query(`
+        ALTER TABLE tender_matches
+        MODIFY COLUMN thread_db_id INT
+      `);
+      console.log('Ensured thread_db_id column is INT type.');
+    } catch (colErr) {
+      console.error('Failed to modify thread_db_id column to INT:', colErr.message);
+    }
+
+    // Add index on thread_db_id for faster JOIN lookups
+    try {
+      await conn.query(`
+        ALTER TABLE tender_matches
+        ADD INDEX idx_thread_db_id (thread_db_id)
+      `);
+      console.log('Added index on thread_db_id to tender_matches.');
+    } catch (colErr) {
+      if (colErr.code !== 'ER_DUP_KEYNAME' && !colErr.message.includes('duplicate key')) {
+        console.error('Failed to add index on thread_db_id:', colErr.message);
+      }
+    }
+
+    // Add user_labels column to threads table if not exists for custom email labeling
+    try {
+      const threadsTable = process.env.DB_TABLE || 'threads';
+      await conn.query(`
+        ALTER TABLE \`${threadsTable}\`
+        ADD COLUMN user_labels VARCHAR(512) DEFAULT NULL
+      `);
+        console.log(`Added user_labels column to ${threadsTable} table.`);
+    } catch (colErr) {
+      if (colErr.code !== 'ER_DUP_FIELDNAME' && !colErr.message.includes('duplicate column')) {
+        console.error('Failed to add user_labels column:', colErr.message);
+      }
+    }
+
+    try {
+      const threadsTable = process.env.DB_TABLE || 'threads';
+      await conn.query(`
+        ALTER TABLE \`${threadsTable}\`
+        ADD COLUMN company VARCHAR(100) DEFAULT NULL
+      `);
+      console.log(`Added company column to ${threadsTable} table.`);
+    } catch (colErr) {
+      if (colErr.code !== 'ER_DUP_FIELDNAME' && !colErr.message.includes('duplicate column')) {
+        console.error('Failed to add company column:', colErr.message);
+      }
+    }
+
+    try {
+      const threadsTable = process.env.DB_TABLE || 'threads';
+      await conn.query(`
+        ALTER TABLE \`${threadsTable}\`
+        ADD COLUMN codeword VARCHAR(100) DEFAULT NULL
+      `);
+      console.log(`Added codeword column to ${threadsTable} table.`);
+    } catch (colErr) {
+      if (colErr.code !== 'ER_DUP_FIELDNAME' && !colErr.message.includes('duplicate column')) {
+        console.error('Failed to add codeword column:', colErr.message);
+      }
+    }
+
+    try {
+      const threadsTable = process.env.DB_TABLE || 'threads';
+      await conn.query(`
+        ALTER TABLE \`${threadsTable}\`
+        ADD INDEX idx_threads_company (company(50))
+      `);
+      console.log(`Added idx_threads_company index.`);
+    } catch (idxErr) {
+      if (idxErr.code !== 'ER_DUP_KEYNAME' && !idxErr.message?.includes('duplicate key')) {
+        console.warn('Could not add idx_threads_company index:', idxErr.message);
+      }
+    }
+
+    try {
+      const threadsTable = process.env.DB_TABLE || 'threads';
+      await conn.query(`
+        ALTER TABLE \`${threadsTable}\`
+        ADD INDEX idx_threads_codeword (codeword(50))
+      `);
+      console.log(`Added idx_threads_codeword index.`);
+    } catch (idxErr) {
+      if (idxErr.code !== 'ER_DUP_KEYNAME' && !idxErr.message?.includes('duplicate key')) {
+        console.warn('Could not add idx_threads_codeword index:', idxErr.message);
+      }
+    }
+
+    // Delete any existing matches for the blacklisted senders
+    const deleteQuery = `
+      DELETE tm FROM tender_matches tm
+      JOIN threads t ON tm.thread_db_id = t.id
+      WHERE t.sender LIKE '%protulchatterjee2020@gmail.com%' 
+         OR t.sender LIKE '%biswajit@omclearing.com%'
+         OR t.sender LIKE '%hr@laserpowerinfra.com%'
+    `;
+    const [delResult] = await conn.query(deleteQuery);
+    if (delResult.affectedRows > 0) {
+      console.log(`Startup cleanup: Deleted ${delResult.affectedRows} matches from blacklisted senders.`);
+    }
+    
+    await conn.end();
+    console.log('Database tables initialized successfully.');
+    
+    // Diagnostic check for AI connectivity
+    testAiConnection();
+  } catch (err) {
+    console.error('Failed to initialize database tables:', err.message);
+  }
+}
+
+// Quick validation on server startup
+async function testAiConnection() {
+  const { client, model, provider, error } = getAiClient();
+  if (error) {
+    lastAiError = error;
+    console.log(`AI initialization skipped: ${error}`);
+    return;
+  }
+  try {
+    console.log(`Testing AI connection to ${provider} using model '${model}'...`);
+    await client.chat.completions.create({
+      model: model,
+      messages: [{ role: 'user', content: 'Ping' }],
+      max_tokens: 1,
+      temperature: 0
+    });
+    lastAiError = null; // Connection is working!
+    console.log(`AI connection successful (${provider} - ${model}).`);
+  } catch (err) {
+    console.error(`AI connection test failed on startup (${provider} - ${model}):`, err.message);
+    lastAiError = err.message;
+  }
+}
+
+// ----------------------------------------------------
+// Robust JSON and Array Extractors for OpenAI Outputs
+// ----------------------------------------------------
+function extractRuleFromJson(str) {
+  if (!str) return { sqlKeywords: [], senderDomain: '' };
+  try {
+    const cleanStr = str.replace(/```json|```/g, '').trim();
+    return JSON.parse(cleanStr);
+  } catch (e) {
+    const keywordsMatch = str.match(/"sqlKeywords"\s*:\s*\[([^\]]+)\]/);
+    const domainMatch = str.match(/"senderDomain"\s*:\s*"([^"]+)"/);
+    
+    const keywords = [];
+    if (keywordsMatch) {
+      keywordsMatch[1].split(',').forEach(k => {
+        const clean = k.replace(/["']/g, '').trim();
+        if (clean) keywords.push(clean);
+      });
+    }
+    
+    return {
+      sqlKeywords: keywords,
+      senderDomain: domainMatch ? domainMatch[1].trim() : ''
+    };
+  }
+}
+
+function extractArrayFromJson(str) {
+  if (!str) return [];
+  try {
+    const cleanStr = str.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleanStr);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === 'object') {
+      for (const val of Object.values(parsed)) {
+        if (Array.isArray(val)) return val;
+      }
+    }
+  } catch (e) {
+    const match = str.match(/\[\s*\d+\s*(?:,\s*\d+\s*)*\]/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch (err) {}
+    }
+  }
+  return [];
+}
+
+function extractReplyDecisionFromJson(str) {
+  if (!str) return null;
+  try {
+    const cleanStr = str.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleanStr);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        required: parsed.hasOwnProperty('required') ? Boolean(parsed.required) : null,
+        reason: typeof parsed.reason === 'string' ? parsed.reason.trim() : null
+      };
+    }
+  } catch (e) {
+    const reqMatch = str.match(/"required"\s*:\s*(true|false)/i);
+    const reasonMatch = str.match(/"reason"\s*:\s*"([^"]+)"/);
+    if (reqMatch || reasonMatch) {
+      return {
+        required: reqMatch ? reqMatch[1].toLowerCase() === 'true' : null,
+        reason: reasonMatch ? reasonMatch[1].trim() : null
+      };
+    }
+  }
+  return null;
+}
+
+// Run database initialization
+initializeDatabase();
+
+// ----------------------------------------------------
+// Google Sheets Client Setup
+// ----------------------------------------------------
+async function getSheetsClient() {
+  const credentialsPath = path.join(__dirname, 'credentials.json');
+  const tokenPath = path.join(__dirname, 'token.json');
+
+  if (!fs.existsSync(credentialsPath) || !fs.existsSync(tokenPath)) {
+    throw new Error('Google Sheets auth files (credentials.json and/or token.json) are missing in the project root.');
+  }
+
+  const credentials = JSON.parse(fs.readFileSync(credentialsPath));
+  const token = JSON.parse(fs.readFileSync(tokenPath));
+
+  const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web;
+  const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
+  oAuth2Client.setCredentials(token);
+
+  return google.sheets({ version: 'v4', auth: oAuth2Client });
+}
+
+async function getSheetTitleByGid(sheets, spreadsheetId, gid) {
+  const response = await sheets.spreadsheets.get({ spreadsheetId });
+  const sheet = response.data.sheets.find(s => s.properties.sheetId === Number(gid));
+  if (!sheet) {
+    throw new Error(`Sheet tab with GID ${gid} not found in spreadsheet.`);
+  }
+  return sheet.properties.title;
+}
+
+async function fetchGoogleSheetTenders() {
+  const sheets = await getSheetsClient();
+  const spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID;
+  const gid = process.env.GOOGLE_SHEET_GID;
+
+  const title = await getSheetTitleByGid(sheets, spreadsheetId, gid);
+  const range = `${title}!A:AG`; // Fetch up to column 33 (AG)
+
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range
+  });
+
+  return response.data.values || [];
+}
+
+// ----------------------------------------------------
+// MySQL Client Setup
+// ----------------------------------------------------
+async function getDbConnection() {
+  return mysql.createConnection({
+    host: process.env.DB_HOST || 'localhost',
+    port: Number(process.env.DB_PORT) || 3306,
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    ssl: {
+      rejectUnauthorized: false
+    }
+  });
+}
+
+// Fetches the body and OCR text. To support incremental sync, this query is also parameterizable.
+async function fetchEmailsFromDb(sinceDateOrId = null) {
+  const conn = await getDbConnection();
+  const table = process.env.DB_TABLE || 'threads';
+  const colId = process.env.DB_COL_ID || 'id';
+  const colSubject = process.env.DB_COL_SUBJECT || 'subject';
+  const colBody = process.env.DB_COL_BODY || 'body';
+  const colSender = process.env.DB_COL_SENDER || 'sender';
+  const colDate = process.env.DB_COL_DATE || 'date';
+
+  let query = `
+    SELECT ${colId} as id, thread_id, ${colSubject} as subject, 
+           ${colBody} as body, 
+           ${colSender} as sender, 
+           ${colDate} as date, 
+           ai_summary, 
+           ocr_text 
+    FROM \`${table}\`
+    WHERE ${colSender} NOT LIKE '%protulchatterjee2020@gmail.com%'
+      AND ${colSender} NOT LIKE '%biswajit@omclearing.com%'
+      AND ${colSender} NOT LIKE '%hr@laserpowerinfra.com%'
+      AND ${colSender} NOT LIKE '%automation@app.smartsheet.com%'
+  `;
+
+  const queryParams = [];
+  if (sinceDateOrId) {
+    if (sinceDateOrId instanceof Date) {
+      query += ` AND ${colDate} >= ?`;
+      queryParams.push(sinceDateOrId);
+    } else {
+      query += ` AND ${colId} > ?`;
+      queryParams.push(Number(sinceDateOrId));
+    }
+  }
+
+  query += ` ORDER BY ${colId} DESC`;
+
+  const [rows] = await conn.execute(query, queryParams);
+  await conn.end();
+  return rows;
+}
+
+// ----------------------------------------------------
+// Email Summarization (OpenAI or Fallback)
+// ----------------------------------------------------
+
+function getOcrSnippet(ocrText, matchedToken = '') {
+  if (!ocrText) return '';
+  const cleanOcr = ocrText.trim();
+
+  if (matchedToken) {
+    const idx = cleanOcr.toLowerCase().indexOf(matchedToken.toLowerCase());
+    if (idx !== -1) {
+      const start = Math.max(0, idx - 800);
+      const end = Math.min(cleanOcr.length, idx + 800);
+      const prefix = start > 0 ? '[... PREVIOUS ATTACHMENT TEXT ...]\n\n' : '';
+      const suffix = end < cleanOcr.length ? '\n\n[... REMAINING ATTACHMENT TEXT ...]' : '';
+      return `${prefix}${cleanOcr.substring(start, end)}${suffix}`;
+    }
+  }
+
+  if (cleanOcr.length <= 3000) return cleanOcr;
+
+  const partLength = 1000;
+  const firstPart = cleanOcr.substring(0, partLength);
+
+  const middleStart = Math.floor((cleanOcr.length - partLength) / 2);
+  const middlePart = cleanOcr.substring(middleStart, middleStart + partLength);
+
+  const lastPart = cleanOcr.substring(cleanOcr.length - partLength);
+
+  return `${firstPart}\n\n[... OCR MIDDLE SECTION ...]\n\n${middlePart}\n\n[... OCR END SECTION ...]\n\n${lastPart}`;
+}
+
+function getRuleBasedSummary(subject, body, ocrText = '') {
+  const cleanBody = (body || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+  const summaryText = cleanBody.length > 250 ? cleanBody.substring(0, 250) + '...' : cleanBody;
+
+  // Simple date detector
+  const dateRegex = /\b(?:\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})|(?:\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4})\b/gi;
+  const dates = [];
+  let m;
+  while ((m = dateRegex.exec(body || '')) !== null) {
+    dates.push(m[0]);
+  }
+
+  const ocrSnippet = getOcrSnippet(ocrText);
+  const ocrNote = ocrSnippet ? '\nAttachment OCR processed.' : '';
+
+  const datesStr = dates.length > 0 ? `Potential dates: ${Array.from(new Set(dates)).join(', ')}` : 'No specific dates detected.';
+  return `${summaryText}${ocrNote}\n\n(${datesStr})`;
+}
+
+async function getEmailSummary(subject, body, ocrText) {
+  const ocrSnippet = getOcrSnippet(ocrText);
+  const { client, error } = getAiClient();
+
+  if (!aiAnalyticsEnabled() || error || !client) {
+    return getRuleBasedSummary(subject, body, ocrText);
+  }
+
+  try {
+    const cleanBody = (body || '').replace(/<[^>]*>/g, '').substring(0, 4000);
+    
+    let prompt = `Please summarize the following tender email. Write a concise 2-to-3 sentence summary covering:
+                  1) What actions/replies are required from us
+                  2) Important dates or deadlines
+                  3) Key context of the email
+
+                  Email Subject: ${subject}
+                  Email Content:
+                  ${cleanBody}`;
+
+    if (ocrSnippet) {
+      prompt += `\n\nAdditionally, here is an OCR text snippet extracted from email attachments (first, middle, and last portions):\n${ocrSnippet}`;
+    }
+
+    const completion = await callChatCompletionsWithFallback({
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant that summarizes email content concisely.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 250,
+      temperature: 0.2
+    });
+
+    lastAiError = null;
+    const textResponse = completion?.choices?.[0]?.message?.content;
+    return textResponse ? textResponse.trim() : getRuleBasedSummary(subject, body, ocrText);
+  } catch (error) {
+    console.error(`AI summary failed:`, error.message);
+    lastAiError = error.message; // Cache error to display in configuration panel
+    return getRuleBasedSummary(subject, body, ocrText);
+  }
+}
+
+// Get the body content of the latest message in a concatenated thread body.
+function getLastMailContent(body) {
+  if (!body) return '';
+  
+  const msgFromRegex = /--- Message\s+(\d+)\s+From:\s*(.*?)\s*---/i;
+  const fwdHeaderRegex = /---------- Forwarded message ---------/i;
+  const fromHeaderRegex = /(?:\r?\n|^)\*?\s*From\s*\*?\s*:/i;
+  
+  let firstIndex = body.length;
+  
+  const m1 = body.match(msgFromRegex);
+  if (m1 && m1.index < firstIndex) firstIndex = m1.index;
+  
+  const m2 = body.match(fwdHeaderRegex);
+  if (m2 && m2.index < firstIndex) firstIndex = m2.index;
+  
+  const m3 = body.match(fromHeaderRegex);
+  if (m3 && m3.index < firstIndex) firstIndex = m3.index;
+  
+  return body.substring(0, firstIndex).trim();
+}
+
+// Extract a single deadline date from email content. Uses OpenAI when available, falls back to regex heuristics.
+// Slices the thread to scan the last/latest message only. Discards deadlines that are prior to the email received date.
+async function extractDeadlineDate(subject, body, ocrText, aiSummary = '', receivedDate = null) {
+  const { client, error } = getAiClient();
+  
+  // Extract the latest/last message body only
+  const lastMailBody = getLastMailContent(body);
+  const cleanBody = (lastMailBody || '').replace(/<[^>]*>/g, '');
+  
+  // Take up to 5000 characters of OCR text to catch attachment deadlines
+  const slicedOcr = ocrText ? String(ocrText).substring(0, 5000) : '';
+  
+  const combined = `AI Summary of Email:\n${aiSummary || ''}\n\nEmail Subject: ${subject || ''}\n\nEmail Body:\n${cleanBody}\n\nOCR Text (first 5000 chars):\n${slicedOcr}`;
+
+  let extractedDate = null;
+
+  // Try AI first (returns YYYY-MM-DD or empty string) — skip when AI disabled
+  if (aiAnalyticsEnabled() && client && !error) {
+    try {
+      const prompt = `Extract only the submission deadline date (if present) from the email details below. Focus on the submission deadline, closing date, or last date of submission mentioned in the summary, email content, or OCR text. Return a single date in ISO format YYYY-MM-DD and nothing else. If no submission deadline is present, return an empty string.\n\nEmail Details:\n${combined}`;
+
+      const completion = await callChatCompletionsWithFallback({
+        messages: [
+          { role: 'system', content: 'You MUST respond with either an ISO date like 2026-05-30 or an empty string. No extra text.' },
+          { role: 'user', content: prompt }
+        ],
+        max_tokens: 20,
+        temperature: 0
+      });
+
+      const content = completion?.choices?.[0]?.message?.content?.trim() || '';
+      const iso = content.match(/\d{4}-\d{2}-\d{2}/);
+      if (iso) {
+        extractedDate = iso[0];
+      }
+    } catch (err) {
+      console.error('AI deadline extraction failed:', err.message);
+    }
+  }
+
+  // Fallback regex extraction if AI didn't find one or is not configured
+  if (!extractedDate) {
+    const text = combined;
+    const dateRegex = /\b(?:\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{4})\b/gi;
+    const matches = [];
+    let m;
+    while ((m = dateRegex.exec(text)) !== null) {
+      matches.push({ text: m[0], index: m.index });
+    }
+
+    if (matches.length > 0) {
+      // Prefer dates near deadline-like keywords
+      const keywords = ['last date', 'last date of submission', 'deadline', 'due by', 'submit by', 'submission by', 'closing date', 'last date for submission', 'last date to submit', 'last date:'];
+      const lower = text.toLowerCase();
+      const keywordPositions = keywords.map(k => lower.indexOf(k)).filter(p => p >= 0);
+
+      let chosen = matches[0];
+      if (keywordPositions.length > 0) {
+        let best = null;
+        let bestDist = Infinity;
+        for (const d of matches) {
+          for (const kp of keywordPositions) {
+            const dist = Math.abs(d.index - kp);
+            if (dist < bestDist) {
+              bestDist = dist;
+              best = d;
+            }
+          }
+        }
+        if (best) chosen = best;
+      }
+
+      // Normalize chosen date text to ISO YYYY-MM-DD
+      function parseToISO(dateStr) {
+        const norm = dateStr.replace(/[,]|st|nd|rd|th/gi, '').trim();
+        // Try Date.parse first (handles '12 Jan 2026' and 'January 12, 2026')
+        const parsed = Date.parse(norm);
+        if (!isNaN(parsed)) {
+          const d = new Date(parsed);
+          return d.toISOString().slice(0, 10);
+        }
+        // Try dd/mm/yyyy or dd-mm-yyyy
+        const dmy = norm.match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/);
+        if (dmy) {
+          let day = Number(dmy[1]);
+          let month = Number(dmy[2]);
+          let year = Number(dmy[3]);
+          if (year < 100) year += 2000;
+          const dt = new Date(year, month - 1, day);
+          if (!isNaN(dt)) return dt.toISOString().slice(0, 10);
+        }
+        return null;
+      }
+
+      extractedDate = parseToISO(chosen.text);
+    }
+  }
+
+  // Date comparison validation:
+  // If the extracted deadline date is prior to the email received date, discard it and return 'discarded'!
+  if (extractedDate && receivedDate) {
+    try {
+      const emailDt = new Date(receivedDate);
+      const deadlineDt = new Date(extractedDate);
+      
+      // Normalize to midnight to compare date components only
+      emailDt.setHours(0, 0, 0, 0);
+      deadlineDt.setHours(0, 0, 0, 0);
+      
+      if (deadlineDt < emailDt) {
+        console.log(`[Deadline] Discarding past/expired deadline ${extractedDate} because it is prior to email received date ${receivedDate}`);
+        return 'discarded';
+      }
+    } catch (e) {
+      console.error('Error comparing deadline date with email received date:', e.message);
+    }
+  }
+
+  return extractedDate;
+}
+
+// Rule-based tender status decider based on email subject/body keywords
+function getRuleBasedTenderStatus(subject, body, summary = '') {
+  const text = `${subject} ${body} ${summary}`.toLowerCase();
+  
+  if (text.includes('award') || text.includes('loi') || text.includes('loa') || text.includes('po ') || text.includes('purchase order') || text.includes('contract booking') || text.includes('dispatch instruction') || text.includes('dispatch intimation')) {
+    return 'Tender Awarded';
+  }
+  if (text.includes('cancel') || text.includes('retender') || text.includes('re-tender')) {
+    return 'Tender Cancelled';
+  }
+  if (text.includes('reverse auction') || text.includes('ra alert') || text.includes('ra scheduled')) {
+    return 'Reverse Auction';
+  }
+  if (text.includes('financial opening') || text.includes('price bid') || text.includes(' l1 ')) {
+    return 'Financial Opened';
+  }
+  if (text.includes('technical opening') || text.includes('bid opening') || text.includes('opened')) {
+    return 'Bid Opened';
+  }
+  if (text.includes('clarification') || text.includes('query') || text.includes('queries') || 
+      text.includes('pre-bid') || text.includes('technical deviation') || text.includes('reply') || 
+      text.includes('response') || text.includes('deviation') || text.includes('shortfall') || 
+      text.includes('submit') || text.includes('provide') || text.includes('missing') || 
+      text.includes('urgent') || text.includes('attention') || text.includes('confirm receipt') || 
+      text.includes('please confirm') || text.includes('send us')) {
+    return 'Clarification Required';
+  }
+  if (text.includes('emd') || text.includes('bg ') || text.includes('tender fee') || text.includes('earnest money') || text.includes('bank guarantee')) {
+    return 'EMD/BG Status';
+  }
+  if (text.includes('confirm') || text.includes('confirming') || text.includes('submit') || text.includes('submission confirmation') || text.includes('successfully uploaded')) {
+    return 'Bid Submitted';
+  }
+  if (text.includes('corrigendum') || text.includes('extension') || text.includes('extended')) {
+    return 'Corrigendum Issued';
+  }
+  return 'Active';
+}
+
+function getRuleBasedReplyDecision(subject, body, summary = '') {
+  const text = `${subject || ''} ${body || ''} ${summary || ''}`.toLowerCase();
+  const positiveSignals = [
+    'urgent', 'asap', 'immediate', 'immediately', 'reply', 'respond', 'response required',
+    'please confirm', 'confirm receipt', 'clarification', 'query', 'queries', 'shortfall',
+    'missing', 'provide', 'submit', 'send us', 'requested to', 'kindly confirm',
+    'action required', 'need your confirmation', 'technical deviation', 'commercial deviation'
+  ];
+  const negativeSignals = [
+    'no reply required', 'do not reply', 'for your information', 'fyi', 'acknowledged', 'acknowledgement',
+    'successfully uploaded', 'bid submitted', 'acknowledgement'
+  ];
+
+  if (negativeSignals.some(signal => text.includes(signal))) {
+    return { required: false, reason: 'Latest email appears informational or already acknowledged.' };
+  }
+
+  if (positiveSignals.some(signal => text.includes(signal))) {
+    return { required: true, reason: 'Latest email asks for confirmation, clarification, documents, or urgent response.' };
+  }
+
+  return { required: false, reason: 'No direct reply request detected in the latest email.' };
+}
+
+async function getReplyDecision(subject, body, summary = '') {
+  const fallback = getRuleBasedReplyDecision(subject, body, summary);
+  const { client, error } = getAiClient();
+  if (!aiAnalyticsEnabled() || error || !client) return fallback;
+
+  try {
+    const cleanBody = (body || '').replace(/<[^>]*>/g, '').substring(0, 2500);
+    const prompt = `Decide if the latest tender-related email requires an urgent reply from Laser Power & Infra.
+Return JSON only in this exact shape:
+{"required":true_or_false,"reason":"short reason under 120 characters"}
+
+Mark required true only when the sender is asking for a reply, confirmation, clarification, missing document, revised submission, or urgent action.
+
+Subject: ${subject || ''}
+Summary: ${summary || ''}
+Email:
+${cleanBody}`;
+
+    const completion = await callChatCompletionsWithFallback({
+      messages: [
+        { role: 'system', content: 'You classify procurement emails for urgent reply requirements. Respond with strict JSON only.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 80,
+      temperature: 0
+    });
+
+    const content = completion?.choices?.[0]?.message?.content?.trim();
+    if (!content) return fallback;
+    const parsed = extractReplyDecisionFromJson(content);
+    return {
+      required: parsed && parsed.required !== null ? parsed.required : fallback.required,
+      reason: parsed && parsed.reason ? parsed.reason.slice(0, 180) : fallback.reason
+    };
+  } catch (error) {
+    console.error('AI reply decision failed:', error.message);
+    return fallback;
+  }
+}
+
+// AI-based urgent reply decision — uses shared fallback chain (Groq → Ollama)
+async function getAnalyticsReplyDecision(subject, body, summary = '') {
+  const fallback = getRuleBasedReplyDecision(subject, body, summary);
+  if (!aiAnalyticsEnabled()) return fallback;
+  const cleanBody = (body || '').replace(/<[^>]*>/g, '').substring(0, 1000);
+  const prompt = `Does this email need an urgent reply? Return ONLY JSON: {"required":true,"reason":"short reason"}
+Subject: ${subject || ''}\nSummary: ${summary || ''}\nBody: ${cleanBody}`;
+
+  try {
+    const completion = await callChatCompletionsWithFallback({
+      messages: [
+        { role: 'system', content: 'Classify if business email needs urgent reply. Strict JSON only.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 60,
+      temperature: 0
+    });
+
+    const content = completion?.choices?.[0]?.message?.content?.trim();
+    if (!content) return fallback;
+    const parsed = extractReplyDecisionFromJson(content);
+    return {
+      required: parsed && parsed.required !== null ? parsed.required : fallback.required,
+      reason: parsed && parsed.reason ? parsed.reason.slice(0, 180) : fallback.reason
+    };
+  } catch (err) {
+    console.warn('[Analytics AI Reply Decision] AI call failed:', err.message);
+  }
+  return fallback;
+}
+
+// AI-based tender status decider using OpenAI (or rule-based fallback)
+async function getTenderStatus(subject, body, summary = '') {
+  const { client, error } = getAiClient();
+  if (!aiAnalyticsEnabled() || error || !client) {
+    return getRuleBasedTenderStatus(subject, body, summary);
+  }
+
+  try {
+    const cleanBody = (body || '').replace(/<[^>]*>/g, '').substring(0, 2500);
+    
+    const prompt = `Based on the following tender email details, determine the current status of the tender in exactly 2 to 3 words.
+Examples: "Bid Submitted", "Clarification Required", "EMD Approved", "Technical Bid Opened", "Financial Bid Opened", "Tender Awarded", "Tender Cancelled", "Queries Raised", "Active".
+
+Email Subject: ${subject}
+AI Summary: ${summary}
+Email Content Snippet:
+${cleanBody}
+
+Respond ONLY with the status label (2-3 words).`;
+
+    const completion = await callChatCompletionsWithFallback({
+      messages: [
+        { role: 'system', content: 'You are an expert procurement assistant. You respond with a short 2-3 word status label based on email updates.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 15,
+      temperature: 0.1
+    });
+
+    const statusLabel = completion?.choices?.[0]?.message?.content;
+    if (statusLabel) {
+      return statusLabel.replace(/['".]/g, '').trim();
+    }
+    return getRuleBasedTenderStatus(subject, body, summary);
+  } catch (error) {
+    console.error('AI status decider failed:', error.message);
+    return getRuleBasedTenderStatus(subject, body, summary);
+  }
+}
+
+async function buildMatchedTenderMetadata(thread, summaryOverride = null) {
+  const subject = thread?.subject || '';
+  const body = thread?.body || '';
+  const summary = summaryOverride ?? thread?.ai_summary ?? '';
+  const ocrText = thread?.ocr_text || '';
+  const receivedDate = thread?.date || null;
+
+  const tenderStatusVal = await getTenderStatus(subject, body, summary);
+  const replyDecision = await getReplyDecision(subject, body, summary);
+
+  let deadline_date_val = null;
+  let isDiscarded = false;
+
+  try {
+    const extracted = await extractDeadlineDate(subject, body, ocrText, summary, receivedDate);
+    if (extracted === 'discarded') {
+      isDiscarded = true;
+      deadline_date_val = null;
+    } else if (extracted) {
+      const dt = new Date(extracted);
+      if (!isNaN(dt.getTime())) {
+        deadline_date_val = dt.toISOString().slice(0, 19).replace('T', ' ');
+      }
+    }
+  } catch (ex) {
+    console.error('Deadline extraction failed:', ex.message || ex);
+  }
+
+  if ((!deadline_date_val || isDiscarded) && replyDecision.required) {
+    try {
+      const recv = receivedDate ? new Date(receivedDate) : new Date();
+      deadline_date_val = recv.toISOString().slice(0, 19).replace('T', ' ');
+      isDiscarded = false;
+    } catch (e) {
+      deadline_date_val = null;
+    }
+  }
+
+  const final_save_deadline = (isDiscarded && !deadline_date_val) ? '1970-01-01 00:00:00' : deadline_date_val;
+
+  return {
+    tenderStatusVal,
+    replyDecision,
+    deadline_date_val: final_save_deadline
+  };
+}
+
+// ----------------------------------------------------
+// Sheet Parsing Helper
+// ----------------------------------------------------
+function parseSheetRows(rows) {
+  if (!rows || rows.length === 0) return [];
+  const headers = rows[0].map(h => (h || '').trim().toLowerCase());
+  
+  const getIndex = (name) => {
+    const normalizedName = name.toLowerCase().trim();
+    return headers.findIndex(h => {
+      const normalizedHeader = h.toLowerCase().trim();
+      return normalizedHeader === normalizedName || normalizedHeader.includes(normalizedName) || normalizedName.includes(normalizedHeader);
+    });
+  };
+  
+  const idxSlNo = getIndex("SL No.");
+  const idxDocket = getIndex("Docket No");
+  const idxTenderFor = getIndex("Tender For");
+  const idxType = getIndex("Type of Tender");
+  const idxTenderNo = getIndex("Tender No / NIT No with Date");
+  const idxNameWork = getIndex("Name of Work / Item Description?");
+  const idxClient = getIndex("Name of the Client?");
+  const idxLastDate = getIndex("Last Date of Submission");
+  const idxOpeningDate = getIndex("Tender Opening Date");
+  const idxCost = getIndex("Cost of Tender / Tender Fee (In Rs)");
+  const idxEmd = getIndex("EMD Amount (In Rs)");
+  const idxEstimatedCost = getIndex("Estimated Cost (In Rs)");
+  const idxParticipated = headers.findIndex(h => h.includes('participated'));
+  const idxStatus = getIndex("Current Status");
+  const idxRemarks = getIndex("Remarks");
+  const idxPrepareBy = getIndex("Tender Prepare By");
+
+  const tenders = [];
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (row.length === 0) continue;
+    
+    const getValue = (idx) => (idx !== -1 && idx < row.length) ? (row[idx] || '').trim() : '';
+    
+    const participatedValue = getValue(idxParticipated);
+    const cleanParticipated = participatedValue.toLowerCase().trim();
+    const isParticipated = cleanParticipated === 'yes' || cleanParticipated === 'y' || cleanParticipated === 'true' || cleanParticipated === '1' || cleanParticipated.includes('yes');
+
+    tenders.push({
+      slNo: getValue(idxSlNo),
+      docketNo: getValue(idxDocket),
+      tenderFor: getValue(idxTenderFor),
+      type: getValue(idxType),
+      tenderNoRaw: getValue(idxTenderNo),
+      nameOfWork: getValue(idxNameWork),
+      client: getValue(idxClient),
+      lastDate: getValue(idxLastDate),
+      openingDate: getValue(idxOpeningDate),
+      cost: getValue(idxCost),
+      emd: getValue(idxEmd),
+      estimatedCost: getValue(idxEstimatedCost),
+      participated: participatedValue,
+      isParticipated: isParticipated,
+      status: getValue(idxStatus),
+      remarks: getValue(idxRemarks),
+      prepareBy: getValue(idxPrepareBy),
+      rowNumber: i + 1
+    });
+  }
+
+  return tenders;
+}
+
+// Keyword-based email categorizer for all 7 categories — runs instantly, no AI calls
+function classifyByKeywords(subject, body, sender) {
+  const text = [subject, body, sender].filter(Boolean).join(' ').toLowerCase();
+
+  const patterns = {
+    'Banking & Finance': [
+      /bank|invoice|payment|gst|receipt|deduction|account\s*stat|credit|debit|insurance|financial|transaction|tax|emt|neft|rtgs|cheque|dd|po\s*fee/i
+    ],
+    'Legal': [
+      /nclt|legal\s*not|court\s*cas|arbitration|contract|agreement|dispute|regulatory|compliance|legal\s*proceedings|advocate|attorney|l[eé]gal|notice\s*under/i
+    ],
+    'Sales': [
+      /rfq|enquir|quotation|proposal|tender|bid|purchase\s*order|business\s*opportunity|requirement|specification|offer|rate\s*quotation/i
+    ],
+    'Purchase': [
+      /vendor\s*regist|procurement|supplier|rate\s*list|indent|purchase\s*req/i
+    ],
+    'HR Notification': [
+      /hr\s*notif|policy\s*update|employee|joining|resignation|payroll|appraisal|holiday|attendance|training|recruitment|notice\s*period/i
+    ],
+    'Promotions': [
+      /promot|newsletter|subscription|advertis|invitation|event|marketing|campaign|webinar|magazine|exhibition|award/i
+    ]
+  };
+
+  for (const [category, regexes] of Object.entries(patterns)) {
+    for (const regex of regexes) {
+      if (regex.test(text)) return category;
+    }
+  }
+
+  return 'General';
+}
+
+// ----------------------------------------------------
+// API ROUTES
+// ----------------------------------------------------
+
+// 1. Get Portal Status (check db and sheets authentication)
+app.get('/api/status', async (req, res) => {
+  const { client, model, provider, error } = getAiClient();
+
+  const status = {
+    sheetsAuth: false,
+    database: false,
+    dbFallbackActive: false,
+    openaiKey: !error && !!client && !lastAiError,
+    aiProvider: provider,
+    aiModel: model,
+    dbHost: process.env.DB_HOST || 'localhost',
+    dbName: process.env.DB_NAME || 'defaultdb',
+    dbTable: process.env.DB_TABLE || 'threads',
+    sheetId: process.env.GOOGLE_SPREADSHEET_ID,
+    sheetGid: process.env.GOOGLE_SHEET_GID,
+    errors: {}
+  };
+
+  if (lastAiError) {
+    status.errors.openai = lastAiError;
+  }
+
+  // Check sheets credentials
+  const credentialsPath = path.join(__dirname, 'credentials.json');
+  const tokenPath = path.join(__dirname, 'token.json');
+  if (fs.existsSync(credentialsPath) && fs.existsSync(tokenPath)) {
+    try {
+      await getSheetsClient();
+      status.sheetsAuth = true;
+    } catch (err) {
+      status.errors.sheets = err.message;
+    }
+  } else {
+    status.errors.sheets = 'credentials.json or token.json is missing in the project root.';
+  }
+
+  // Check MySQL Database connection
+  try {
+    const conn = await getDbConnection();
+    const table = process.env.DB_TABLE || 'threads';
+    await conn.query(`SELECT 1 FROM \`${table}\` LIMIT 1`);
+    await conn.end();
+    status.database = true;
+  } catch (err) {
+    status.errors.database = err.message;
+    status.dbFallbackActive = true;
+  }
+
+  res.json(status);
+});
+
+// 2. Fetch Sync Status / Cache details
+app.get('/api/sync-info', async (req, res) => {
+  const cache = readCache(CACHE_FILE, null);
+  if (!cache) {
+    return res.json({ synced: false, lastSynced: null, tendersCount: 0, matchesCount: 0 });
+  }
+
+  let matchesCount = 0;
+  try {
+    const conn = await getDbConnection();
+    const [rows] = await conn.query('SELECT COUNT(*) as count FROM tender_matches');
+    matchesCount = rows[0].count;
+    await conn.end();
+  } catch (err) {
+    console.error('Error fetching matches count from database:', err.message);
+  }
+
+  res.json({
+    synced: true,
+    lastSynced: cache.lastSynced,
+    tendersCount: cache.tenders.length,
+    participatedCount: cache.tenders.filter(t => t.isParticipated).length,
+    matchesCount: matchesCount
+  });
+});
+
+// Global state to prevent concurrent sync executions
+let isSyncing = false;
+
+async function runSync(forceFullSyncRequested = false) {
+  if (isSyncing) {
+    console.log('Sync is already in progress. Skipping...');
+    throw new Error('Sync already in progress');
+  }
+
+  isSyncing = true;
+  let conn;
+  try {
+    console.log('Syncing started...');
+    
+    // Read previous sync metadata to check for incremental execution
+    const cache = readCache(CACHE_FILE, null);
+    let lastSyncedId = null;
+    let cachedTendersMap = {};
+
+    if (cache && cache.lastSyncedId) {
+      lastSyncedId = Number(cache.lastSyncedId);
+    }
+    if (cache && cache.tenders) {
+      cache.tenders.forEach(t => {
+        const key = `${t.docketNo}||${t.tenderNoRaw}`;
+        cachedTendersMap[key] = true;
+      });
+    }
+
+    // A. Fetch current sheet list
+    const rawRows = await fetchGoogleSheetTenders();
+    const tenders = parseSheetRows(rawRows);
+    const participatedTenders = tenders.filter(t => t.isParticipated);
+    const allTenders = tenders.filter(t => t.docketNo || t.tenderNoRaw);
+
+    // Save GSheet tenders cache immediately so the UI can load them while matching is in progress!
+    const syncPayload = {
+      lastSynced: new Date().toISOString(),
+      lastSyncedId: lastSyncedId,
+      tenders: tenders
+    };
+    writeCache(CACHE_FILE, syncPayload);
+
+    // Identify if there are any new tenders added since the last sync
+    const newTenders = allTenders.filter(t => {
+      const key = `${t.docketNo}||${t.tenderNoRaw}`;
+      return !cachedTendersMap[key];
+    });
+    const hasNewTenders = newTenders.length > 0;
+
+    // B. Fetch threads (lightweight query)
+    // Incremental: If no new tenders, only fetch threads from the last 7 days (1 week).
+    // If there are new tenders or FORCE_FULL_SYNC is enabled, we must scan all threads!
+    let threads = [];
+    const forceFullSync = shouldUseFullSync(forceFullSyncRequested, process.env);
+    const shouldUseIncrementalSync = Boolean(lastSyncedId && !hasNewTenders && !forceFullSync);
+
+    if (shouldUseIncrementalSync) {
+      console.log(`Incremental sync: fetching emails with id > ${lastSyncedId}`);
+      threads = await fetchEmailsFromDb(lastSyncedId);
+    } else {
+      if (forceFullSync) {
+        console.log(`Full sync mode enabled: Scanning ALL threads`);
+      } else {
+        console.log(`Full candidate sync: Scanning all threads`);
+      }
+      threads = await fetchEmailsFromDb();
+    }
+
+    console.log(`Pre-normalizing ${threads.length} threads for fast CPU matching (non-blocking)...`);
+    const { normalizeText } = require('./matcher');
+    const normalizedThreads = [];
+    const normChunkSize = 100;
+    for (let i = 0; i < threads.length; i += normChunkSize) {
+      const chunk = threads.slice(i, i + normChunkSize);
+      for (const t of chunk) {
+        normalizedThreads.push({
+          ...t,
+          normSubject: normalizeText(t.subject),
+          normBody: normalizeText(t.body),
+          normOcr: normalizeText(t.ocr_text)
+        });
+      }
+      // Yield to the event loop to keep server responsive
+      await new Promise(resolve => setImmediate(resolve));
+    }
+
+    // Pre-compile token regexes for all tenders
+    console.log(`Pre-compiling token regexes for ${allTenders.length} tenders...`);
+    allTenders.forEach(tender => {
+      const tokens = extractTenderTokens(tender.tenderNoRaw);
+      tender.tokens = tokens;
+      tender.compiledRegexes = tokens.map(token => ({
+        token: token,
+        regex: makeTokenRegex(token)
+      }));
+    });
+    console.log(`Pre-compilation complete. Starting matching engine (non-blocking)...`);
+
+    const table = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const colBody = process.env.DB_COL_BODY || 'body';
+
+    const matchesToInsert = [];
+
+    // C. Matching loop (CPU intensive, non-blocking chunked execution)
+    for (let i = 0; i < allTenders.length; i++) {
+      const tender = allTenders[i];
+      if (!tender.docketNo) continue;
+      
+      const key = `${tender.docketNo}||${tender.tenderNoRaw}`;
+      const isNewTender = !cachedTendersMap[key];
+
+      for (const thread of normalizedThreads) {
+        // Skip matching any thread from blacklisted senders
+        const senderLower = (thread.sender || '').toLowerCase();
+        if (senderLower.includes('protulchatterjee2020@gmail.com') || senderLower.includes('biswajit@omclearing.com') || senderLower.includes('hr@laserpowerinfra.com')) {
+          continue;
+        }
+
+        const matchResult = checkMatchCompiled(tender.compiledRegexes, thread.normSubject, thread.normBody, thread.normOcr);
+        if (matchResult.matched) {
+          matchesToInsert.push({
+            docketNo: tender.docketNo,
+            tenderNo: tender.tenderNoRaw,
+            threadDbId: thread.id,
+            threadId: thread.thread_id,
+            matchedToken: matchResult.matchedToken,
+            confidence: matchResult.confidence,
+            thread: thread
+          });
+        }
+      }
+
+      // Yield to the event loop every 5 tenders to allow HTTP requests to be handled
+      if (i % 5 === 0) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+
+    let newMatchesCount = 0;
+
+    // D. Database batch insert & summary updates
+    if (matchesToInsert.length > 0) {
+      console.log(`Found ${matchesToInsert.length} matching emails. Grouping by tender for optimization...`);
+      conn = await getDbConnection();
+      
+      // Group matches by tender key
+      const groupedMatches = {};
+      for (const match of matchesToInsert) {
+        const key = `${match.docketNo}||${match.tenderNo}`;
+        if (!groupedMatches[key]) groupedMatches[key] = [];
+        groupedMatches[key].push(match);
+      }
+
+      for (const key of Object.keys(groupedMatches)) {
+        const group = groupedMatches[key];
+
+        // Sort matches descending by date (latest first)
+        group.sort((a, b) => {
+          const dateA = a.thread?.date ? new Date(a.thread.date).getTime() : 0;
+          const dateB = b.thread?.date ? new Date(b.thread.date).getTime() : 0;
+          return dateB - dateA;
+        });
+
+        const latestMatch = group[0];
+
+        // Check if the latest match in this batch is newer than or equal to what is already in the DB
+        const [existing] = await conn.execute(`
+          SELECT MAX(t.date) as max_date 
+          FROM tender_matches tm 
+          JOIN threads t ON tm.thread_db_id = t.id 
+          WHERE tm.docket_no = ? AND tm.tender_no = ?
+        `, [latestMatch.docketNo, latestMatch.tenderNo]);
+
+        const dbLatestDateStr = existing[0]?.max_date;
+        const dbLatestTime = dbLatestDateStr ? new Date(dbLatestDateStr).getTime() : 0;
+        const batchLatestTime = latestMatch.thread?.date ? new Date(latestMatch.thread.date).getTime() : 0;
+
+        const isAbsoluteLatest = batchLatestTime >= dbLatestTime;
+
+        for (let idx = 0; idx < group.length; idx++) {
+          const match = group[idx];
+          const thread = match.thread;
+
+          // Defaults for old/non-latest matched emails
+          let tenderStatusVal = 'NONE';
+          let replyDecision = { required: false, reason: '' };
+          let final_save_deadline = null;
+
+          // Only perform AI summarization and metadata extraction on the absolute latest email in the thread
+          if (idx === 0 && isAbsoluteLatest) {
+            // Reuse stored AI metadata if already computed and no new email arrived since
+            const [existingMatches] = await conn.execute(
+              `SELECT tender_status, reply_required, reply_reason, deadline_date, matched_at
+               FROM tender_matches
+               WHERE docket_no = ? AND tender_no = ? AND thread_db_id = ? LIMIT 1`,
+              [match.docketNo, match.tenderNo, thread.id]
+            );
+            const existing = existingMatches[0];
+            const threadDate = thread.date ? new Date(thread.date).getTime() : 0;
+            const matchedAt = existing && existing.matched_at ? new Date(existing.matched_at).getTime() : 0;
+            const hasNewEmail = threadDate > matchedAt;
+
+            if (existing && existing.tender_status && !hasNewEmail) {
+              // Reuse stored metadata — zero AI calls for this match
+              tenderStatusVal = existing.tender_status;
+              replyDecision = { required: Boolean(existing.reply_required), reason: existing.reply_reason || '' };
+              final_save_deadline = existing.deadline_date;
+            } else {
+              // Fetch full text & generate summary only if not already summarized
+              if (!thread.ai_summary || thread.ai_summary.trim() === '') {
+                console.log(`Summarizing matched LATEST email ${thread.id} on demand...`);
+                
+                const [fullRows] = await conn.execute(`
+                  SELECT ${colBody} as body, ocr_text 
+                  FROM \`${table}\` 
+                  WHERE ${colId} = ?
+                `, [thread.id]);
+                
+                const fullThread = fullRows[0] || { body: thread.body, ocr_text: thread.ocr_text };
+                const summary = await getEmailSummary(thread.subject, fullThread.body, fullThread.ocr_text);
+                
+                await conn.execute(`
+                  UPDATE \`${table}\` 
+                  SET ai_summary = ? 
+                  WHERE ${colId} = ?
+                `, [summary, thread.id]);
+                thread.ai_summary = summary;
+                thread.body = fullThread.body; // Populate body for status decider
+              }
+
+              const metadata = await buildMatchedTenderMetadata(thread);
+              tenderStatusVal = metadata.tenderStatusVal;
+              replyDecision = metadata.replyDecision;
+              final_save_deadline = metadata.deadline_date_val;
+            }
+          }
+
+          // Log match relationship in SQL
+          const insertMatchQuery = `
+            INSERT IGNORE INTO tender_matches 
+            (docket_no, tender_no, thread_db_id, thread_id, matched_token, confidence, tender_status, reply_required, reply_reason, deadline_date) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `;
+          const [result] = await conn.execute(insertMatchQuery, [
+            match.docketNo,
+            match.tenderNo,
+            match.threadDbId,
+            match.threadId,
+            match.matchedToken,
+            match.confidence,
+            tenderStatusVal,
+            replyDecision.required ? 1 : 0,
+            replyDecision.reason,
+            final_save_deadline
+          ]);
+          
+          if (result.affectedRows > 0) {
+            newMatchesCount++;
+          }
+        }
+      }
+    }
+
+
+
+    conn = conn || await getDbConnection();
+    await backfillThreadsCompanyAndCodeword(conn);
+
+    // Determine the max thread ID seen in this sync to store as the new threshold
+    let newMaxSyncedId = lastSyncedId || 0;
+    if (threads.length > 0) {
+      const maxFetchedId = Math.max(...threads.map(t => Number(t.id)));
+      if (maxFetchedId > newMaxSyncedId) {
+        newMaxSyncedId = maxFetchedId;
+      }
+    }
+
+    // Save final GSheet tenders cache to mark lastSynced timestamp & lastSyncedId
+    const finalSyncPayload = {
+      lastSynced: new Date().toISOString(),
+      lastSyncedId: newMaxSyncedId,
+      tenders: tenders
+    };
+    writeCache(CACHE_FILE, finalSyncPayload);
+    
+    console.log(`Sync completed successfully. Matches found: ${newMatchesCount}. New threshold ID: ${newMaxSyncedId}`);
+    return {
+      success: true,
+      lastSynced: finalSyncPayload.lastSynced,
+      lastSyncedId: newMaxSyncedId,
+      totalTenders: tenders.length,
+      participatedTenders: participatedTenders.length,
+      matchedEmailsCount: newMatchesCount
+    };
+  } catch (error) {
+    console.error('Sync failed:', error);
+    throw error;
+  } finally {
+    isSyncing = false;
+    if (conn) {
+      await conn.end();
+    }
+  }
+}
+
+// 3. Trigger Syncing route (delegates to runSync)
+app.get('/api/sync', async (req, res) => {
+  try {
+    const forceFullSyncRequested = req.query.forceFullSync === 'true' || req.query.forceFullSync === '1';
+    const result = await runSync(forceFullSyncRequested);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: 'Sync failed', details: error.message });
+  }
+});
+
+// 4. Get All Tenders (from cache, merged with database match counts & latest activity date)
+app.get('/api/tenders', async (req, res) => {
+  const cache = readCache(CACHE_FILE, null);
+
+  const { excludeTenderTiger } = req.query;
+  const isExclude = excludeTenderTiger === 'true';
+
+  let countsMap = {};
+  let conn;
+  try {
+    conn = await getDbConnection();
+    
+    // Join matches table with threads to fetch the date of the latest email matched
+    let query = `
+      SELECT tm.docket_no, tm.tender_no, COUNT(*) as match_count,
+             MAX(t.date) as latest_email_date,
+             MAX(CASE WHEN tm.confidence = 'HIGH' THEN 2 WHEN tm.confidence = 'MEDIUM' THEN 1 ELSE 0 END) as max_conf_val,
+             GROUP_CONCAT(DISTINCT t.sender SEPARATOR '||') as senders
+      FROM tender_matches tm
+      JOIN threads t ON tm.thread_db_id = t.id
+      WHERE t.sender NOT LIKE '%protulchatterjee2020@gmail.com%'
+        AND t.sender NOT LIKE '%biswajit@omclearing.com%'
+        AND t.sender NOT LIKE '%hr@laserpowerinfra.com%'
+    `;
+    const params = [];
+    if (isExclude) {
+      query += ` AND t.sender NOT LIKE ? `;
+      params.push('%tendertiger.com%');
+    }
+    query += ` GROUP BY tm.docket_no, tm.tender_no `;
+
+    const [rows] = await conn.execute(query, params);
+    
+    rows.forEach(r => {
+      const key = `${r.docket_no}||${r.tender_no}`;
+      countsMap[key] = {
+        count: r.match_count,
+        latestEmailDate: r.latest_email_date,
+        maxConfidence: r.max_conf_val === 2 ? 'HIGH' : (r.max_conf_val === 1 ? 'MEDIUM' : 'NONE'),
+        status: null,
+        replyRequired: false,
+        replyReason: null,
+        latestEmailId: null,
+        deadlineDate: null,
+        senders: r.senders ? r.senders.split('||') : []
+      };
+    });
+    // Fetch latest matched email details for each tender to resolve status efficiently
+    let statusQuery = `
+      SELECT tm.docket_no, tm.tender_no, tm.tender_status, tm.reply_required, tm.reply_reason,
+             tm.deadline_date, tm.matched_at,
+             t.id as thread_id, t.subject, t.ai_summary, t.date
+      FROM tender_matches tm
+      JOIN threads t ON tm.thread_db_id = t.id
+      WHERE t.sender NOT LIKE '%protulchatterjee2020@gmail.com%'
+        AND t.sender NOT LIKE '%biswajit@omclearing.com%'
+        AND t.sender NOT LIKE '%hr@laserpowerinfra.com%'
+        ${isExclude ? "AND t.sender NOT LIKE '%tendertiger.com%'" : ""}
+      ORDER BY t.date DESC
+    `;
+    
+    const [statusRows] = await conn.execute(statusQuery);
+    
+    for (const r of statusRows) {
+      const key = `${r.docket_no}||${r.tender_no}`;
+      if (countsMap[key] && !countsMap[key].latestEmailId) {
+        let tenderStatus = r.tender_status || getRuleBasedTenderStatus(r.subject, '', r.ai_summary);
+        
+        const ruleDecision = getRuleBasedReplyDecision(r.subject, '', r.ai_summary);
+        let replyRequired = r.reply_required !== null ? Boolean(r.reply_required) : ruleDecision.required;
+        let replyReason = r.reply_reason || ruleDecision.reason;
+
+        let deadlineDate = r.deadline_date;
+        const isSentinel = deadlineDate && (String(deadlineDate).startsWith('1970-01-01') || String(deadlineDate).startsWith('1969-12-31'));
+        if (isSentinel) deadlineDate = null;
+
+        if (!deadlineDate && replyRequired) {
+          const recv = r.date ? new Date(r.date) : new Date();
+          deadlineDate = recv.toISOString().slice(0, 19).replace('T', ' ');
+        }
+
+        countsMap[key].status = tenderStatus;
+        countsMap[key].replyRequired = replyRequired;
+        countsMap[key].replyReason = replyReason;
+        countsMap[key].latestEmailId = r.thread_id;
+        countsMap[key].deadlineDate = deadlineDate;
+      }
+    }
+
+  } catch (err) {
+    console.error('Error fetching database match counts:', err.message);
+  } finally {
+    if (conn) {
+      await conn.end();
+    }
+  }
+  
+  // Enhance tenders with match counts & latest activity date from DB
+  const sheetTenders = (cache?.tenders || []).filter(t => t.docketNo || t.tenderNoRaw);
+  // Also include orphan matches from DB that don't have sheet entries
+  const orphanTenders = Object.entries(countsMap)
+    .filter(([key, match]) => match.count > 0 && !sheetTenders.some(t => `${t.docketNo}||${t.tenderNoRaw}` === key))
+    .map(([key, match]) => {
+      const [docketNo, tenderNoRaw] = key.split('||');
+      return {
+        docketNo: docketNo || 'Unknown',
+        tenderNoRaw: tenderNoRaw || 'Unknown',
+        tenderFor: `Matched Tender - ${tenderNoRaw || docketNo}`,
+        client: 'From Email Match',
+        isParticipated: false,
+        rowNumber: -Date.now(),
+        status: match.status || 'Active',
+        matchCount: match.count,
+        latestEmailDate: match.latestEmailDate,
+        maxConfidence: match.maxConfidence,
+        replyRequired: match.replyRequired,
+        replyReason: match.replyReason,
+        latestEmailId: match.latestEmailId,
+        deadlineDate: match.deadlineDate,
+        senders: match.senders || []
+      };
+    });
+  const validTenders = [...sheetTenders, ...orphanTenders];
+  const tendersWithMatches = validTenders.map(t => {
+    const key = `${t.docketNo}||${t.tenderNoRaw}`;
+    const dbMatch = countsMap[key] || { count: 0, latestEmailDate: null, maxConfidence: 'NONE', status: null, replyRequired: false, replyReason: null, latestEmailId: null, deadlineDate: null, senders: [] };
+    
+    if (t.isParticipated && !t.tokens) {
+      t.tokens = extractTenderTokens(t.tenderNoRaw);
+    }
+
+    return {
+      ...t,
+      matchCount: dbMatch.count,
+      latestEmailDate: dbMatch.latestEmailDate,
+      maxConfidence: dbMatch.maxConfidence,
+      status: dbMatch.count > 0 ? (dbMatch.status || t.status || 'Active') : (t.status || 'Active'),
+      replyRequired: dbMatch.replyRequired,
+      replyReason: dbMatch.replyReason,
+      latestEmailId: dbMatch.latestEmailId,
+      deadlineDate: dbMatch.deadlineDate,
+      senders: dbMatch.senders || []
+    };
+  });
+
+  // Sort tenders:
+  // 1. Participated tenders first.
+  // 2. Tenders with matches first.
+  // 3. For tenders with matches, sort by latest matched email date (newest first).
+  // 4. For tenders without matches, sort by sheet row index descending (newest sheet row first).
+  tendersWithMatches.sort((a, b) => {
+    if (a.isParticipated !== b.isParticipated) {
+      return a.isParticipated ? -1 : 1;
+    }
+    
+    if (a.isParticipated) {
+      // Both are participated
+      if (a.matchCount > 0 && b.matchCount === 0) return -1;
+      if (a.matchCount === 0 && b.matchCount > 0) return 1;
+
+      if (a.matchCount > 0 && b.matchCount > 0) {
+        if (a.latestEmailDate && b.latestEmailDate) {
+          return new Date(b.latestEmailDate) - new Date(a.latestEmailDate);
+        }
+      }
+    }
+    
+    return b.rowNumber - a.rowNumber;
+  });
+
+  res.json(tendersWithMatches);
+});
+
+// 5. Get Matched Emails (Threads) for a Specific Tender GSheet Row
+app.get('/api/tenders/:rowNumber/emails', async (req, res) => {
+  const { excludeTenderTiger, docket_no, tender_no } = req.query;
+  const isExclude = excludeTenderTiger === 'true';
+
+  let docketNo = docket_no;
+  let tenderNo = tender_no;
+
+  if (!docketNo || !tenderNo) {
+    const cache = readCache(CACHE_FILE, null);
+    const rowNumber = Number(req.params.rowNumber);
+    const tender = cache?.tenders?.find(t => t.rowNumber === rowNumber);
+    if (!tender) {
+      return res.status(404).json({ error: 'Tender row not found.' });
+    }
+    docketNo = tender.docketNo;
+    tenderNo = tender.tenderNoRaw;
+  }
+
+  if (!docketNo) {
+    return res.json([]); 
+  }
+
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const threadsTable = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const colSubject = process.env.DB_COL_SUBJECT || 'subject';
+    const colBody = process.env.DB_COL_BODY || 'body';
+    const colSender = process.env.DB_COL_SENDER || 'sender';
+    const colDate = process.env.DB_COL_DATE || 'date';
+
+    // Query matched emails by joining threads table with tender_matches
+    let query = `
+      SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colBody} as body,
+             t.${colSender} as sender, t.${colDate} as date_received, t.ai_summary as summary, t.to_details, t.cc_details,
+             t.company, t.category, t.sub_category,
+             LEFT(t.ocr_text, 7000) as ocr_text, t.attach_names, t.attach_links,
+             tm.matched_token, tm.matched_token as matchedToken, tm.confidence
+      FROM \`${threadsTable}\` t
+      JOIN tender_matches tm ON t.${colId} = tm.thread_db_id
+      WHERE tm.docket_no = ? AND tm.tender_no = ?
+        AND t.sender NOT LIKE '%protulchatterjee2020@gmail.com%'
+        AND t.sender NOT LIKE '%biswajit@omclearing.com%'
+        AND t.sender NOT LIKE '%automation@app.smartsheet.com%'
+        AND t.sender NOT LIKE '%hr@laserpowerinfra.com%'
+    `;
+    const params = [docketNo, tenderNo];
+
+    if (isExclude) {
+      query += ` AND t.sender NOT LIKE ? `;
+      params.push('%tendertiger.com%');
+    }
+
+    query += ` ORDER BY t.${colDate} DESC `;
+
+    console.log(`[API] Docket: "${docketNo}", TenderNo: "${tenderNo}"`);
+    console.log(`[API] Query: ${query.trim()}`);
+    const [emails] = await conn.execute(query, params);
+    console.log(`[API] Query returned ${emails.length} emails.`);
+    
+    // Add processed ocr_snippet for details pane
+    const formattedEmails = emails.map(email => ({
+      ...email,
+      ocr_snippet: getOcrSnippet(email.ocr_text, email.matched_token || email.matchedToken || tenderNo || '')
+    }));
+
+    res.json(formattedEmails);
+  } catch (err) {
+    console.error('Failed to load database matches for tender:', err.message);
+    res.status(500).json({ error: 'Failed to load matched emails', details: err.message });
+  } finally {
+    if (conn) {
+      await conn.end();
+    }
+  }
+});
+
+// 6. Force Regenerate summary for an email and save to threads table
+// Additionally re-evaluates tender status, reply decision, and deadline if the email is matched to a tender.
+app.post('/api/emails/:id/summarize', async (req, res) => {
+  const emailId = req.params.id;
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const threadsTable = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const colSubject = process.env.DB_COL_SUBJECT || 'subject';
+    const colBody = process.env.DB_COL_BODY || 'body';
+
+    // Retrieve email body, subject, ocr_text, and date from threads table
+    const [rows] = await conn.execute(`SELECT ${colSubject} as subject, ${colBody} as body, ocr_text, date FROM \`${threadsTable}\` WHERE ${colId} = ?`, [emailId]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Email thread not found in database.' });
+    }
+
+    const email = rows[0];
+    console.log(`Manually generating summary for email thread ${emailId} with OCR text...`);
+    const summary = await getEmailSummary(email.subject, email.body, email.ocr_text);
+
+    // Save summary directly into threads table
+    await conn.execute(`UPDATE \`${threadsTable}\` SET ai_summary = ? WHERE ${colId} = ?`, [summary, emailId]);
+
+    // Check if this email is matched in tender_matches and re-evaluate AI details
+    const [matchRows] = await conn.execute(`SELECT id, docket_no, tender_no FROM tender_matches WHERE thread_db_id = ?`, [emailId]);
+    if (matchRows.length > 0) {
+      console.log(`Email thread ${emailId} is matched to a tender. Re-evaluating status, reply decision, and deadline...`);
+      
+const { tenderStatusVal, replyDecision, deadline_date_val } = await buildMatchedTenderMetadata({
+            subject: email.subject,
+            body: email.body,
+            ai_summary: summary,
+            ocr_text: email.ocr_text,
+            date: email.date
+          });
+
+          const final_save_deadline = deadline_date_val;
+
+      // Update tender_matches table
+      await conn.execute(`
+        UPDATE tender_matches 
+        SET tender_status = ?, reply_required = ?, reply_reason = ?, deadline_date = ?, matched_at = CURRENT_TIMESTAMP
+        WHERE thread_db_id = ?
+      `, [tenderStatusVal, replyDecision.required ? 1 : 0, replyDecision.reason, final_save_deadline, emailId]);
+      
+      console.log(`Updated tender_matches for email thread ${emailId}: status='${tenderStatusVal}', reply_required=${replyDecision.required}, deadline='${final_save_deadline}'`);
+    }
+
+    res.json({ success: true, summary });
+  } catch (error) {
+    console.error('Manual summarization failed:', error);
+    res.status(500).json({ error: 'Summarization failed', details: error.message });
+  } finally {
+    if (conn) {
+      await conn.end();
+    }
+  }
+});
+
+// 7. Get Recent Matched Emails (across all tenders) for notifications and dashboard activity
+app.get('/api/recent-matches', async (req, res) => {
+  const { excludeTenderTiger, page = 1, limit = 1000 } = req.query;
+  const isExclude = excludeTenderTiger === 'true';
+  const pageNum = Math.max(1, Number(page));
+  const limitNum = Math.min(2000, Math.max(1, Number(limit)));
+  const offset = (pageNum - 1) * limitNum;
+
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const threadsTable = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const colSubject = process.env.DB_COL_SUBJECT || 'subject';
+    const colSender = process.env.DB_COL_SENDER || 'sender';
+    const colDate = process.env.DB_COL_DATE || 'date';
+
+    // Count total matched emails first
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM \`${threadsTable}\` t
+      JOIN tender_matches tm ON t.${colId} = tm.thread_db_id
+      WHERE t.sender NOT LIKE '%protulchatterjee2020@gmail.com%'
+        AND t.sender NOT LIKE '%biswajit@omclearing.com%'
+        AND t.sender NOT LIKE '%automation@app.smartsheet.com%'
+        AND t.sender NOT LIKE '%hr@laserpowerinfra.com%'
+    `;
+    const countParams = [];
+    if (isExclude) {
+      countQuery += ` AND t.sender NOT LIKE ? `;
+      countParams.push('%tendertiger.com%');
+    }
+    const [[{ total }]] = await conn.execute(countQuery, countParams);
+
+    let query = `
+      SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender, t.${colDate} as date_received, t.ai_summary as summary, t.to_details, t.cc_details,
+             t.company, t.category, t.sub_category,
+             LEFT(t.ocr_text, 3000) as ocr_text, tm.docket_no, tm.tender_no, tm.matched_token, tm.matched_token as matchedToken, tm.confidence
+      FROM \`${threadsTable}\` t
+      JOIN tender_matches tm ON t.${colId} = tm.thread_db_id
+      WHERE t.sender NOT LIKE '%protulchatterjee2020@gmail.com%'
+        AND t.sender NOT LIKE '%biswajit@omclearing.com%'
+        AND t.sender NOT LIKE '%automation@app.smartsheet.com%'
+        AND t.sender NOT LIKE '%hr@laserpowerinfra.com%'
+    `;
+    const params = [];
+    if (isExclude) {
+      query += ` AND t.sender NOT LIKE ? `;
+      params.push('%tendertiger.com%');
+    }
+
+    query += ` ORDER BY t.${colDate} DESC LIMIT ${limitNum} OFFSET ${offset}`;
+
+    const [emails] = await conn.execute(query, params);
+
+    // Add formatted ocr snippet
+    const formattedEmails = emails.map(e => ({
+      ...e,
+      ocr_snippet: getOcrSnippet(e.ocr_text, e.matched_token || e.matchedToken || '')
+    }));
+
+    res.json({ emails: formattedEmails, total: Number(total), page: pageNum, limit: limitNum });
+  } catch (err) {
+    console.error('Failed to load recent matched emails:', err.message);
+    res.status(500).json({ error: 'Failed to load recent matches', details: err.message });
+  } finally {
+    if (conn) {
+      await conn.end();
+    }
+  }
+});
+
+// 7b. Get Matched Emails with optional date range filters
+app.get('/api/matched-emails', async (req, res) => {
+  const { startDate, endDate, excludeTenderTiger, company: companyFilter, page = 1, limit = 500, sortOrder } = req.query;
+  const orderDir = sortOrder === 'asc' ? 'ASC' : 'DESC';
+  const isExclude = excludeTenderTiger === 'true';
+  const pageNum = Number(page) || 1;
+  const limitNum = Number(limit) || 500;
+  const offset = (pageNum - 1) * limitNum;
+
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const threadsTable = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const colSubject = process.env.DB_COL_SUBJECT || 'subject';
+    const colSender = process.env.DB_COL_SENDER || 'sender';
+    const colDate = process.env.DB_COL_DATE || 'date';
+    const colBody = process.env.DB_COL_BODY || 'body';
+
+    let query = `
+      SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender,
+             DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date_received,
+             t.ai_summary as summary, t.company, t.to_details,
+             LEFT(t.ocr_text, 3000) as ocr_text, t.${colBody} as body, t.attach_names, t.attach_links,
+             tm.docket_no, tm.tender_no, tm.matched_token, tm.matched_token as matchedToken, tm.confidence
+      FROM \`${threadsTable}\` t
+      JOIN tender_matches tm ON t.${colId} = tm.thread_db_id
+    `;
+    let countQuery = `
+      SELECT COUNT(*) as total FROM \`${threadsTable}\` t
+      JOIN tender_matches tm ON t.${colId} = tm.thread_db_id
+    `;
+    const params = [];
+    const countParams = [];
+    const conditions = [
+      "t.sender NOT LIKE '%protulchatterjee2020@gmail.com%'",
+      "t.sender NOT LIKE '%biswajit@omclearing.com%'",
+      "t.sender NOT LIKE '%automation@app.smartsheet.com%'",
+      "t.sender NOT LIKE '%hr@laserpowerinfra.com%'"
+    ];
+
+    const { startUtc, endUtc } = getUtcRangeForIstDates(startDate, endDate);
+    if (startUtc) {
+      conditions.push(`t.${colDate} >= ?`);
+      params.push(startUtc);
+      countParams.push(startUtc);
+    }
+    if (endUtc) {
+      conditions.push(`t.${colDate} <= ?`);
+      params.push(endUtc);
+      countParams.push(endUtc);
+    }
+    if (isExclude) {
+      conditions.push(`t.sender NOT LIKE ?`);
+      params.push('%tendertiger.com%');
+      countParams.push('%tendertiger.com%');
+    }
+    if (companyFilter) {
+      const isOutsider = String(companyFilter).toLowerCase() === 'outsider';
+      let cond = `(t.company = ? OR t.company LIKE ? OR t.company LIKE ? OR t.company LIKE ? OR t.company LIKE ? OR t.company LIKE ? OR t.company LIKE ?`;
+      if (isOutsider) cond += ` OR t.company IS NULL OR t.company = ''`;
+      cond += `)`;
+      conditions.push(cond);
+      params.push(companyFilter, `%,${companyFilter},%`, `${companyFilter},%`, `%,${companyFilter}`, `%/${companyFilter}/%`, `${companyFilter}/%`, `%/${companyFilter}`);
+      countParams.push(companyFilter, `%,${companyFilter},%`, `${companyFilter},%`, `%,${companyFilter}`, `%/${companyFilter}/%`, `${companyFilter}/%`, `%/${companyFilter}`);
+    }
+
+    if (conditions.length > 0) {
+      const whereClause = ` WHERE ` + conditions.join(' AND ');
+      query += whereClause;
+      countQuery += whereClause;
+    }
+
+    query += ` ORDER BY CASE WHEN t.${colDate} IS NULL THEN 1 ELSE 0 END, t.${colDate} ${orderDir} LIMIT ${limitNum} OFFSET ${offset}`;
+
+    console.log(`[API] Fetching matched emails. Filter: ${companyFilter || 'none'}, Page: ${pageNum}`);
+    const [[{ total }]] = await conn.execute(countQuery, countParams);
+    const [emails] = await conn.execute(query, params);
+    
+    // Parse companies from the company column and add ocr snippet
+    const formattedEmails = emails.map(e => {
+      const companies = parseCompanies(e.company);
+      return {
+        ...e,
+        companies,
+        codewords: [],
+        ocr_snippet: getOcrSnippet(e.ocr_text, e.matched_token || e.matchedToken || '')
+      };
+    });
+    
+    res.json({ success: true, total, page: pageNum, limit: limitNum, emails: formattedEmails });
+  } catch (err) {
+    console.error('Failed to load matched emails:', err.message);
+    res.status(500).json({ error: 'Failed to load matched emails', details: err.message });
+  } finally {
+    if (conn) {
+      await conn.end();
+    }
+  }
+});
+
+
+
+// 8. Generate reply suggestion draft using OpenAI
+app.get('/api/emails/:id/reply-suggestion', async (req, res) => {
+  const emailId = req.params.id;
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const threadsTable = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const colSubject = process.env.DB_COL_SUBJECT || 'subject';
+    const colBody = process.env.DB_COL_BODY || 'body';
+    const colSender = process.env.DB_COL_SENDER || 'sender';
+
+    // Retrieve email body, subject, sender, ocr_text, attach_names, attach_links
+    const [rows] = await conn.execute(`
+      SELECT ${colSubject} as subject, ${colBody} as body, ${colSender} as sender, ocr_text, attach_names, attach_links, ai_summary
+      FROM \`${threadsTable}\` 
+      WHERE ${colId} = ?
+    `, [emailId]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Email thread not found in database.' });
+    }
+
+    const email = rows[0];
+    
+    // Parse attachments
+    const names = email.attach_names ? email.attach_names.split(',').map(n => n.trim()) : [];
+    const links = email.attach_links ? email.attach_links.split(',').map(l => l.trim()) : [];
+    const attachments = names.map((name, i) => ({ name, link: links[i] || '#' }));
+
+    // Generate AI response suggestion
+    let suggestion = '';
+    const { client, error } = getAiClient();
+    if (client && !error) {
+      try {
+        const cleanBody = (email.body || '').replace(/<[^>]*>/g, '').substring(0, 3000);
+        
+        const prompt = `Based on the following email details, draft a professional, polite, and contextual email reply from the Laser Power & Infra team.
+The reply should address the key concerns/requests in the email. Keep it concise (1-2 short paragraphs) and professional.
+Do not include subject line or sender headers in your response, just the body of the reply.
+
+Original Email Subject: ${email.subject}
+Original Email Content:
+${cleanBody}
+AI Summary of Email: ${email.ai_summary || ''}`;
+
+        const completion = await callChatCompletionsWithFallback({
+          messages: [
+            { role: 'system', content: 'You are an expert procurement coordinator drafting a reply to a tender enquiry.' },
+            { role: 'user', content: prompt }
+          ],
+          max_tokens: 300,
+          temperature: 0.2
+        });
+
+        suggestion = completion?.choices?.[0]?.message?.content?.trim();
+      } catch (err) {
+        console.error('AI reply suggestion failed:', err.message);
+      }
+    }
+
+    // Fallback template suggestion if AI fails or key is missing
+    if (!suggestion) {
+      suggestion = `Dear Sir/Madam,\n\nThank you for your communication regarding the subject tender. We have received your query and our technical team is currently reviewing it.\n\nWe will get back to you with the necessary response / documents shortly.\n\nBest regards,\nTender Coordination Team\nLaser Power & Infra Pvt Ltd.`;
+    }
+
+    res.json({
+      success: true,
+      to: email.sender,
+      subject: email.subject.toLowerCase().startsWith('re:') ? email.subject : `Re: ${email.subject}`,
+      suggestedReply: suggestion,
+      attachments: attachments
+    });
+  } catch (error) {
+    console.error('Reply suggestion endpoint failed:', error);
+    res.status(500).json({ error: 'Failed to generate suggested reply', details: error.message });
+  } finally {
+    if (conn) {
+      await conn.end();
+    }
+  }
+});
+
+// 9. Send email using SMTP transporter or Mock fallback
+app.post('/api/emails/send', async (req, res) => {
+  const { to, subject, body, attachments } = req.body;
+  if (!to || !subject || !body) {
+    return res.status(400).json({ error: 'Recipient (to), subject, and email body are required.' });
+  }
+
+  // Append attachments if any are selected by the user
+  let finalBody = body;
+  if (attachments && Array.isArray(attachments) && attachments.length > 0) {
+    finalBody += '\n\n---\nAttached Files:\n' + attachments.map(att => `- ${att.name}: ${att.link}`).join('\n');
+  }
+
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = Number(process.env.SMTP_PORT) || 587;
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+
+  if (smtpHost && smtpUser && smtpPass) {
+    try {
+      console.log(`[SMTP] Attempting to send email to ${to} via ${smtpHost}...`);
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465, // true for 465, false for other ports
+        auth: {
+          user: smtpUser,
+          pass: smtpPass
+        }
+      });
+
+      const info = await transporter.sendMail({
+        from: `"${process.env.SMTP_FROM_NAME || 'Laser Power & Infra'}" <${smtpUser}>`,
+        to,
+        subject,
+        text: finalBody
+      });
+
+      console.log('[SMTP] Email sent successfully:', info.messageId);
+      res.json({ success: true, messageId: info.messageId, mode: 'SMTP' });
+    } catch (err) {
+      console.error('[SMTP] Failed to send email via SMTP:', err.message);
+      res.status(500).json({ error: 'Failed to send email via SMTP', details: err.message });
+    }
+  } else {
+    // Mock Mode
+    console.log('\n--- [MOCK EMAIL SENT] ---');
+    console.log(`Date: ${new Date().toLocaleString()}`);
+    console.log(`To: ${to}`);
+    console.log(`Subject: ${subject}`);
+    console.log('Body:');
+    console.log(finalBody);
+    console.log('-------------------------\n');
+
+    // Return success in mock mode
+    res.json({ 
+      success: true, 
+      messageId: `mock_msg_${Math.random().toString(36).substring(2, 15)}`, 
+      mode: 'MOCK' 
+    });
+  }
+});
+
+// ----------------------------------------------------
+// In-Memory Fallback Database (For offline/DB-disconnected use)
+// ----------------------------------------------------
+const fallbackEmails = [
+  {
+    id: "msg_fallback_1",
+    thread_id: "thread_fallback_1",
+    subject: "Clarification on GEM/2026/B/7429306 - Cables Quantity & Pricing",
+    sender: "GeM Portal Support <gem-support@gov.in>",
+    date: "2026-06-24 10:30:00",
+    date_received: "2026-06-24 10:30:00",
+    category: "Tender/RFP/Bid",
+    priority: "HIGH",
+    is_important: 1,
+    user_labels: "Review, Urgent",
+    attach_names: "clarification_cables_qty.pdf, amended_bid_clause.pdf",
+    attach_links: "https://drive.google.com/file/d/1_gem_clarification_123, https://drive.google.com/file/d/1_gem_clause_456",
+    ocr_text: "Clarification on bid quantity for high-voltage XLPE cables. Bid validity must be extended to 90 days. Copper conductor specifications must match Annexure IV.",
+    ai_summary: "GeM Support has issued a critical clarification regarding XLPE cables quantity and copper conductor specifications for bid GEM/2026/B/7429306. Action is required by June 30.",
+    body: `<html>
+      <body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; padding: 20px;">
+        <div style="max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+          <div style="background-color: #0056b3; color: white; padding: 20px; text-align: center;">
+            <h2 style="margin: 0; font-size: 20px;">Government E-Marketplace (GeM)</h2>
+            <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.9;">Official Bid Clarification Notice</p>
+          </div>
+          <div style="padding: 24px; background-color: #ffffff;">
+            <p>Dear Bidder,</p>
+            <p>This is an automated alert regarding <strong>Bid Number: GEM/2026/B/7429306</strong> for the supply of <strong>Electrical Cables & Conductors</strong>.</p>
+            <p>The buyer has issued a clarification on the cable quantities and pricing clauses. Please review the table below for the updated schedule:</p>
+            
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 14px;">
+              <thead>
+                <tr style="background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+                  <th style="padding: 10px; text-align: left; border: 1px solid #dee2e6;">Item Description</th>
+                  <th style="padding: 10px; text-align: right; border: 1px solid #dee2e6;">Original Qty</th>
+                  <th style="padding: 10px; text-align: right; border: 1px solid #dee2e6;">Revised Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style="padding: 10px; border: 1px solid #dee2e6;">1.1 KV XLPE Armoured Aluminum Cable 3C x 185 Sqmm</td>
+                  <td style="padding: 10px; text-align: right; border: 1px solid #dee2e6;">5,000 m</td>
+                  <td style="padding: 10px; text-align: right; border: 1px solid #dee2e6;"><strong>8,500 m</strong></td>
+                </tr>
+                <tr style="background-color: #fdfdfe;">
+                  <td style="padding: 10px; border: 1px solid #dee2e6;">33 KV XLPE Three Core Copper Cable 3C x 300 Sqmm</td>
+                  <td style="padding: 10px; text-align: right; border: 1px solid #dee2e6;">1,200 m</td>
+                  <td style="padding: 10px; text-align: right; border: 1px solid #dee2e6;"><strong>1,800 m</strong></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; border-radius: 4px; margin: 20px 0;">
+              <strong style="color: #856404;">URGENT NOTICE:</strong> The submission deadline has been extended to <strong>June 30, 2026, at 15:00 Hrs</strong>. Please ensure all revised price schedules are uploaded before the cutoff.
+            </div>
+
+            <p>Please find the official clarification document and revised bid clauses attached to this email.</p>
+            <p>Regards,<br/><strong>GeM Portal Support Team</strong></p>
+          </div>
+          <div style="background-color: #f1f3f5; padding: 15px; text-align: center; font-size: 12px; color: #6c757d; border-top: 1px solid #e0e0e0;">
+            This is a system-generated email. Please do not reply directly to this message.
+          </div>
+        </div>
+      </body>
+    </html>`
+  },
+  {
+    id: "msg_fallback_2",
+    thread_id: "thread_fallback_2",
+    subject: "HDFC Bank Statement - Account ending 8324 - June 2026",
+    sender: "HDFC Bank Alerts <alerts@hdfcbank.net>",
+    date: "2026-06-23 09:15:00",
+    date_received: "2026-06-23 09:15:00",
+    category: "Banking/Finance",
+    priority: "HIGH",
+    is_important: 1,
+    user_labels: "Finance, HDFC",
+    attach_names: "HDFC_Statement_June2026.pdf",
+    attach_links: "https://drive.google.com/file/d/1_hdfc_stmt_456",
+    ocr_text: "HDFC Bank Ltd. E-Statement of Account. Client: Laser Power & Infra. Balance: INR 4,82,91,042.82. Total Credits: INR 1,50,00,000. Total Debits: INR 92,30,129.",
+    ai_summary: "Monthly HDFC Bank e-statement for account ending 8324. Shows a closing balance of INR 4.82 Crores with substantial credit transactions.",
+    body: `<html>
+      <body style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #444; background-color: #f5f6f8; padding: 30px;">
+        <div style="max-width: 600px; margin: 0 auto; background: white; border: 1px solid #e1e4e8; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); overflow: hidden;">
+          <div style="background: linear-gradient(135deg, #173267 0%, #004b87 100%); color: white; padding: 25px 30px;">
+            <div style="font-size: 24px; font-weight: bold; letter-spacing: 1px;">HDFC BANK</div>
+            <div style="font-size: 14px; opacity: 0.8; margin-top: 5px;">We understand your world</div>
+          </div>
+          <div style="padding: 30px;">
+            <h3 style="color: #173267; margin-top: 0; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px;">Monthly E-Statement Notification</h3>
+            <p>Dear Customer,</p>
+            <p>Your monthly e-statement of account for <strong>LASER POWER & INFRA</strong> for the period ending <strong>23-June-2026</strong> is now available for download.</p>
+            
+            <div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 20px; margin: 20px 0;">
+              <table style="width: 100%; font-size: 14px;">
+                <tr>
+                  <td style="padding: 5px 0; color: #6c757d;">Account Number:</td>
+                  <td style="padding: 5px 0; text-align: right; font-weight: bold; color: #173267;">*****8324</td>
+                </tr>
+                <tr>
+                  <td style="padding: 5px 0; color: #6c757d;">Currency:</td>
+                  <td style="padding: 5px 0; text-align: right; font-weight: bold;">INR</td>
+                </tr>
+                <tr>
+                  <td style="padding: 5px 0; color: #6c757d;">Closing Balance:</td>
+                  <td style="padding: 5px 0; text-align: right; font-weight: bold; color: #28a745; font-size: 16px;">4,82,91,042.82</td>
+                </tr>
+              </table>
+            </div>
+
+            <p>The statement file is attached as a secure PDF. To open the statement, please use your standard corporate customer password.</p>
+            <p>For any queries, please contact your Relationship Manager directly or write to corporate.care@hdfcbank.com.</p>
+            <br/>
+            <p style="font-size: 13px; color: #6c757d;">Warm Regards,<br/><strong>HDFC Bank Corporate Alerts</strong></p>
+          </div>
+          <div style="background-color: #f8f9fa; color: #888; font-size: 11px; padding: 20px; text-align: center; border-top: 1px solid #eee;">
+            HDFC Bank Ltd. Registered Office: HDFC Bank House, Senapati Bapat Marg, Lower Parel, Mumbai - 400013.
+          </div>
+        </div>
+      </body>
+    </html>`
+  },
+  {
+    id: "msg_fallback_3",
+    thread_id: "thread_fallback_3",
+    subject: "Purchase Order: PO-984210 - Copper Rods & Wire Supply",
+    sender: "Industrial Procurement <orders@industrialcorp.com>",
+    date: "2026-06-22 14:20:00",
+    date_received: "2026-06-22 14:20:00",
+    category: "Purchase Order",
+    priority: "HIGH",
+    is_important: 1,
+    user_labels: "PO, Copper, Sales",
+    attach_names: "PO_984210_CopperRods.pdf",
+    attach_links: "https://drive.google.com/file/d/1_po_984210",
+    ocr_text: "PURCHASE ORDER. PO No: PO-984210. Buyer: Industrial Corp Ltd. Seller: Laser Power & Infra. Item: 8mm Copper Rods. Qty: 25 Metric Tons. Unit Price: INR 7,50,000 per MT.",
+    ai_summary: "Formal Purchase Order PO-984210 from Industrial Corp for the supply of 25 Metric Tons of 8mm Copper Rods, totaling INR 1.87 Crores.",
+    body: `<html>
+      <body style="font-family: Calibri, Candara, Segoe, Arial, sans-serif; color: #333; padding: 20px;">
+        <div style="max-width: 650px; margin: 0 auto; border: 2px solid #2e7d32; border-radius: 6px; overflow: hidden;">
+          <div style="background-color: #2e7d32; color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-size: 20px; font-weight: bold; letter-spacing: 0.5px;">PURCHASE ORDER</span>
+            <span style="font-size: 14px;">PO NO: <strong>PO-984210</strong></span>
+          </div>
+          <div style="padding: 25px; background-color: #fff;">
+            <p>Dear Team,</p>
+            <p>We are pleased to place a formal Purchase Order for the supply of raw materials as per the commercial terms finalized on our contract. Please find the details below:</p>
+            
+            <div style="margin: 20px 0; border: 1px solid #ccc; border-radius: 4px; padding: 15px; font-size: 14px;">
+              <strong>Delivery Address:</strong><br/>
+              Industrial Corp Manufacturing Facility, Block B, Sector 6,<br/>
+              Industrial Area, Noida, UP - 201301
+            </div>
+
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 14px;">
+              <thead>
+                <tr style="background-color: #f1f8e9; border-bottom: 2px solid #2e7d32;">
+                  <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Item</th>
+                  <th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Qty</th>
+                  <th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Rate (per MT)</th>
+                  <th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Total Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style="padding: 8px; border: 1px solid #ddd;">8mm High-Purity Electrolytic Copper Rods (ASTM B49)</td>
+                  <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">25 MT</td>
+                  <td style="padding: 8px; text-align: right; border: 1px solid #ddd;">INR 7,50,000</td>
+                  <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>INR 1,87,50,000</strong></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <p><strong>Delivery Schedule:</strong> Materials must be delivered in batches starting 10-July-2026. The full order must be fulfilled by 31-July-2026.</p>
+            <p>Please sign and return the duplicate copy of this PO as acknowledgment of acceptance within 3 days.</p>
+            <p>Sincerely,<br/><strong>Procurement Manager</strong><br/>Industrial Corporation Ltd.</p>
+          </div>
+        </div>
+      </body>
+    </html>`
+  },
+  {
+    id: "msg_fallback_4",
+    thread_id: "thread_fallback_4",
+    subject: "Signed Contract - Laser Power & NBPDCL Supply Agreement",
+    sender: "NBPDCL Legal Division <legal@nbpdcl.in>",
+    date: "2026-06-21 16:45:00",
+    date_received: "2026-06-21 16:45:00",
+    category: "Contract/Agreement",
+    priority: "HIGH",
+    is_important: 1,
+    user_labels: "Contract, NBPDCL",
+    attach_names: "Supply_Agreement_Conductors_Signed.pdf",
+    attach_links: "https://drive.google.com/file/d/1_nbpdcl_contract_777",
+    ocr_text: "CONTRACT AGREEMENT. Between North Bihar Power Distribution Company Ltd. (NBPDCL) and Laser Power & Infra. Contract Value: INR 8,92,40,192. Scope: Supply of ACSR Conductors.",
+    ai_summary: "Fully executed and signed contract between NBPDCL and Laser Power for the supply of ACSR Conductors, valued at INR 8.92 Crores.",
+    body: `Dear Sir,
+
+Please find attached the signed contract agreement copy for the supply of ACSR Conductors under Tender ID NBPDCL/ACSR/2026-07.
+
+The agreement has been formally executed by our Managing Director today. You are requested to submit the Performance Bank Guarantee (PBG) equivalent to 3% of the contract value (INR 26,77,206) within 15 days from the date of this letter to initiate the dispatch schedule.
+
+Kindly acknowledge receipt.
+
+Regards,
+Legal & Compliance Officer,
+NBPDCL Head Office, Patna.`
+  },
+  {
+    id: "msg_fallback_5",
+    thread_id: "thread_fallback_5",
+    subject: "MP Eprocurement: Reverse Auction Alert for Bid 2026_PKVVC_499972_1",
+    sender: "MP Eprocurement RA Portal <ra-alerts@mpeproc.gov.in>",
+    date: "2026-06-20 11:30:00",
+    date_received: "2026-06-20 11:30:00",
+    category: "Tender/RFP/Bid",
+    priority: "HIGH",
+    is_important: 1,
+    user_labels: "Tender, Reverse Auction",
+    attach_names: "RA_Rules_Annexure.pdf",
+    attach_links: "https://drive.google.com/file/d/1_ra_rules_888",
+    ocr_text: "REVERSE AUCTION NOTICE. Tender Ref: TS-1704. ID: 2026_PKVVC_499972_1. Date: 26-June-2026. Start Time: 11:00 AM. Decrement: 0.1%. Bidder portal access active.",
+    ai_summary: "Official e-procurement alert notifying that the Reverse Auction for MP Tender 2026_PKVVC_499972_1 is scheduled for June 26, 2026, starting at 11:00 AM.",
+    body: `<html>
+      <body style="font-family: system-ui, -apple-system, sans-serif; background-color: #f9f9f9; padding: 20px; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; background: white; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+          <div style="background-color: #e65100; color: white; padding: 20px; text-align: center;">
+            <h2 style="margin: 0; font-size: 18px;">Madhya Pradesh E-Procurement Portal</h2>
+            <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">IMPORTANT ALERT: REVERSE AUCTION SCHEDULED</p>
+          </div>
+          <div style="padding: 25px;">
+            <p>Dear Bidder,</p>
+            <p>You have successfully qualified the technical evaluation for the following tender. The competent authority has scheduled the <strong>Reverse Auction (RA)</strong> process as per details below:</p>
+            
+            <div style="background-color: #fff8e1; border-left: 4px solid #ffb300; padding: 15px; border-radius: 4px; margin: 20px 0; font-size: 14px;">
+              <strong>Tender Reference No:</strong> TS-1704<br/>
+              <strong>Tender ID:</strong> 2026_PKVVC_499972_1<br/>
+              <strong>Work Description:</strong> Supply of AAC & ACSR Conductors<br/>
+              <strong>Auction Date:</strong> June 26, 2026<br/>
+              <strong>Auction Start Time:</strong> 11:00 AM IST<br/>
+              <strong>RA Decrement Value:</strong> 0.1% of current L1 price
+            </div>
+
+            <p><strong>Critical Instructions:</strong></p>
+            <ul style="padding-left: 20px; font-size: 13px; color: #555;">
+              <li style="margin-bottom: 8px;">Please ensure your Digital Signature Certificate (DSC) is mapped and active.</li>
+              <li style="margin-bottom: 8px;">Log in to the portal at least 30 minutes prior to the start of the auction.</li>
+              <li style="margin-bottom: 8px;">Review the Reverse Auction Rules and guidelines document attached.</li>
+            </ul>
+
+            <p>For portal support, please contact the MP Eprocurement Helpdesk at support-eproc@mp.gov.in.</p>
+            <p>Regards,<br/><strong>E-Procurement Administrator</strong></p>
+          </div>
+        </div>
+      </body>
+    </html>`
+  },
+  {
+    id: "msg_fallback_6",
+    thread_id: "thread_fallback_6",
+    subject: "Canara Bank EMD Payment Confirmation - Bid Ref 2026_CAN_948",
+    sender: "Canara Bank Alerts <statements@canarabank.com>",
+    date: "2026-06-18 16:10:00",
+    date_received: "2026-06-18 16:10:00",
+    category: "Banking/Finance",
+    priority: "MEDIUM",
+    is_important: 0,
+    user_labels: "EMD, Canara, Finance",
+    attach_names: "Canara_NEFT_EMD_Receipt.pdf",
+    attach_links: "https://drive.google.com/file/d/1_canara_receipt_789",
+    ocr_text: "Canara Bank. NEFT Transaction. Sender: Laser Power & Infra. Beneficiary: MP Paschim Kshetra Vidyut Vitaran. Amount: INR 5,00,000. Status: SUCCESS.",
+    ai_summary: "Payment receipt for EMD of INR 5,00,000 via NEFT to MP Paschim Kshetra Vidyut Vitaran from Canara Bank account.",
+    body: `Dear customer,
+
+We are pleased to confirm that your NEFT transaction for Earnest Money Deposit (EMD) has been successfully processed.
+
+Transaction Summary:
+- Debit Account: Laser Power & Infra (A/c *****1023)
+- Beneficiary: MP Paschim Kshetra Vidyut Vitaran Co. Ltd.
+- Amount: INR 5,00,000.00
+- UTR Number: CNRB0029304818210
+- Status: Completed Successfully
+- Date: 18-June-2026 15:45:00
+
+An official stamped NEFT receipt is attached to this email for your tender bid uploads.
+
+Thank you for banking with Canara Bank.
+
+Sincerely,
+Canara Bank Corporate Banking Division.`
+  },
+  {
+    id: "msg_fallback_7",
+    thread_id: "thread_fallback_7",
+    subject: "Invoice: INV-2026-0042 - Copper Ingots Delivery",
+    sender: "Copper Suppliers Ltd <billing@coppersuppliers.co.in>",
+    date: "2026-06-17 12:45:00",
+    date_received: "2026-06-17 12:45:00",
+    category: "Invoice/Billing",
+    priority: "MEDIUM",
+    is_important: 0,
+    user_labels: "Invoice, Copper, Finance",
+    attach_names: "Invoice_INV_2026_0042.pdf",
+    attach_links: "https://drive.google.com/file/d/1_invoice_0042",
+    ocr_text: "TAX INVOICE. Copper Suppliers Ltd. GSTIN: 27AABCS98210Z3. Invoice No: INV-2026-0042. Client: Laser Power. Amount: INR 45,92,100. Tax: 18% GST.",
+    ai_summary: "Tax invoice INV-2026-0042 from Copper Suppliers Ltd for 6 Metric Tons of Copper Ingots, totaling INR 45.92 Lakhs (inclusive of GST).",
+    body: `<html>
+      <body style="font-family: Arial, sans-serif; padding: 15px;">
+        <h3>Copper Suppliers Limited</h3>
+        <p>Dear Accounts Team,</p>
+        <p>Please find attached our Tax Invoice <strong>INV-2026-0042</strong> dated 17-June-2026 for materials delivered under delivery challan DC-48201.</p>
+        
+        <div style="padding: 10px; border: 1px solid #ddd; width: 350px; background-color: #f9f9f9; font-size: 14px; line-height: 1.4;">
+          <strong>Invoice Details:</strong><br/>
+          Invoice No: INV-2026-0042<br/>
+          Date: 17-June-2026<br/>
+          Amount Due: <strong>INR 45,92,100.00</strong><br/>
+          Payment Terms: Net 30 Days
+        </div>
+
+        <p>Please process the payment via RTGS to our Bank of Baroda account listed on the invoice and share the payment advice.</p>
+        <p>For delivery queries, contact Mr. Rajesh Verma (dispatch@coppersuppliers.co.in).</p>
+        <p>Regards,<br/>Finance Desk<br/>Copper Suppliers Ltd.</p>
+      </body>
+    </html>`
+  },
+  {
+    id: "msg_fallback_8",
+    thread_id: "thread_fallback_8",
+    subject: "Enquiry: Cable Price List & Catalog for Bangalore Metro Project",
+    sender: "Tech Parks India <info@techparks.in>",
+    date: "2026-06-15 14:10:00",
+    date_received: "2026-06-15 14:10:00",
+    category: "Client Communication",
+    priority: "MEDIUM",
+    is_important: 0,
+    user_labels: "Enquiry, Metro, Sales",
+    attach_names: "",
+    attach_links: "",
+    ocr_text: "",
+    ai_summary: "Commercial inquiry from Tech Parks India requesting product catalog and price list for 1.1KV and 11KV power cables for a metro project in Bangalore.",
+    body: `Dear Sales Team,
+
+We are a leading infrastructure developer working on a commercial tech park near Bangalore Metro Phase 2.
+
+We require a large quantity of power cables for our internal electrical distribution network. Could you please share:
+1. Your latest product catalog for 1.1KV and 11KV XLPE Armoured Cables (Aluminum & Copper).
+2. The price list or standard commercial terms.
+3. Your manufacturing lead time for an order of approximately 15,000 meters.
+
+We look forward to your prompt response to initiate discussion.
+
+Best regards,
+Anand K. Singh,
+Procurement Head, Tech Parks India Pvt. Ltd., Bangalore.`
+  },
+  {
+    id: "msg_fallback_9",
+    thread_id: "thread_fallback_9",
+    subject: "Steel Core Wire Delivery Status - Dispatch Challan SD-9421",
+    sender: "Steel Wire Corp <logistics@steelwire.com>",
+    date: "2026-06-14 10:20:00",
+    date_received: "2026-06-14 10:20:00",
+    category: "Vendor/Supplier",
+    priority: "LOW",
+    is_important: 0,
+    user_labels: "Steel, Vendor, Dispatch",
+    attach_names: "Challan_SD_9421.pdf",
+    attach_links: "https://drive.google.com/file/d/1_steel_challan_111",
+    ocr_text: "DISPATCH CHALLAN. Steel Wire Corp. Challan No: SD-9421. Consignee: Laser Power & Infra. Item: High Tensile Steel Core Wire. Qty: 12 MT.",
+    ai_summary: "Logistics update from Steel Wire Corp confirming the dispatch of 12 Metric Tons of High Tensile Steel Core Wire via transport vehicle UP-16-AT-9432.",
+    body: `Dear Sir,
+
+We have dispatched the 12 Metric Tons of High Tensile Steel Core Wire ordered under PO-948210 today.
+
+The consignment is shipped via Shree Balaji Roadlines (Vehicle No: UP-16-AT-9432) and is expected to reach your Haridwar factory by June 17, 2026.
+
+The Dispatch Challan SD-9421 and weighbridge slip are attached for your gate entry team.
+
+Best Regards,
+Logistics Team, Steel Wire Corp.`
+  },
+  {
+    id: "msg_fallback_10",
+    thread_id: "thread_fallback_10",
+    subject: "Industry Newsletter - June 2026: Metal Prices & Trends",
+    sender: "Metal Bulletin <newsletter@metalbulletin.org>",
+    date: "2026-06-12 09:00:00",
+    date_received: "2026-06-12 09:00:00",
+    category: "General",
+    priority: "LOW",
+    is_important: 0,
+    user_labels: "Newsletter, Metals",
+    attach_names: "",
+    attach_links: "",
+    ocr_text: "",
+    ai_summary: "Monthly newsletter from Metal Bulletin highlighting the global copper and aluminum price trends, highlighting a 3% surge in copper LME prices.",
+    body: `<html>
+      <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 15px; margin: 0;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: white; border: 1px solid #ddd; border-radius: 4px; padding: 20px;">
+          <h2 style="color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 10px; margin-top: 0;">METAL BULLETIN NEWSLETTER</h2>
+          <p style="font-size: 13px; color: #666;">Monthly Trends & Price Forecasts - June 2026</p>
+          
+          <h4 style="color: #333; margin-bottom: 5px;">1. Copper Prices Hit 6-Month High on LME</h4>
+          <p style="font-size: 14px; line-height: 1.5; color: #555; margin-top: 0;">
+            Global copper prices surged by 3.2% this week on the London Metal Exchange (LME) due to supply disruptions in key South American mines and robust demand from the green energy and electrical grids manufacturing sectors. Analysts expect prices to hover around USD 9,200/MT for the next quarter.
+          </p>
+
+          <h4 style="color: #333; margin-bottom: 5px;">2. Aluminum Output Expands in Asia</h4>
+          <p style="font-size: 14px; line-height: 1.5; color: #555; margin-top: 0;">
+            Aluminum production has expanded by 1.8% month-on-month in China and India, keeping domestic prices relatively stable despite increased shipping costs.
+          </p>
+
+          <div style="background-color: #eee; padding: 10px; text-align: center; font-size: 11px; color: #777; margin-top: 20px;">
+            You are receiving this email because you subscribed to Metal Bulletin. To unsubscribe, click here.
+          </div>
+        </div>
+      </body>
+    </html>`
+  }
+];
+
+// Helper to filter, search and paginate emails in-memory
+function filterFallbackEmails(queryObj) {
+  const { category, search, label, startDate, endDate, page = 1, limit = 50 } = queryObj;
+  
+  let result = [...fallbackEmails];
+
+  // Apply filters
+  if (category) {
+    result = result.filter(e => e.category === category);
+  }
+
+  if (label) {
+    result = result.filter(e => {
+      if (!e.user_labels) return false;
+      const tags = e.user_labels.split(',').map(t => t.trim().toLowerCase());
+      return tags.includes(label.toLowerCase());
+    });
+  }
+
+  const { startUtc: fallbackStartUtc, endUtc: fallbackEndUtc } = getUtcRangeForIstDates(startDate, endDate);
+  if (fallbackStartUtc) {
+    const start = new Date(fallbackStartUtc);
+    result = result.filter(e => new Date(e.date || e.date_received) >= start);
+  }
+
+  if (fallbackEndUtc) {
+    const end = new Date(fallbackEndUtc);
+    result = result.filter(e => new Date(e.date || e.date_received) <= end);
+  }
+
+  if (search) {
+    const q = search.toLowerCase();
+    result = result.filter(e => 
+      (e.subject && e.subject.toLowerCase().includes(q)) ||
+      (e.sender && e.sender.toLowerCase().includes(q)) ||
+      (e.body && e.body.toLowerCase().includes(q)) ||
+      (e.ocr_text && e.ocr_text.toLowerCase().includes(q))
+    );
+  }
+
+  // Sort by date DESC
+  result.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  // Pagination
+  const total = result.length;
+  const offset = (Number(page) - 1) * Number(limit);
+  const paginated = result.slice(offset, offset + Number(limit));
+
+  return {
+    success: true,
+    total,
+    page: Number(page),
+    limit: Number(limit),
+    emails: paginated.map(e => ({
+      id: e.id,
+      thread_id: e.thread_id,
+      subject: e.subject,
+      sender: e.sender,
+      date: e.date,
+      date_received: e.date_received,
+      category: e.category,
+      priority: e.priority,
+      is_important: e.is_important,
+      user_labels: e.user_labels,
+      attach_names: e.attach_names,
+      attach_links: e.attach_links,
+      body_preview: e.body ? e.body.replace(/<[^>]*>/g, '').substring(0, 300) : ''
+    }))
+  };
+}
+
+// 10. Get All Emails from database (paginated, with search & category & custom label filtering)
+app.get('/api/all-emails', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const table = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const colSubject = process.env.DB_COL_SUBJECT || 'subject';
+    const colBody = process.env.DB_COL_BODY || 'body';
+    const colSender = process.env.DB_COL_SENDER || 'sender';
+    const colDate = process.env.DB_COL_DATE || 'date';
+
+    const { category, subCategory, search, label, startDate, endDate, page = 1, limit = 50, excludeTenderTiger, sortOrder, company: companyFilter, codeword: codewordFilter, recipient: recipientFilter } = req.query;
+    const isExclude = String(excludeTenderTiger) === 'true';
+    const orderDir = sortOrder === 'asc' ? 'ASC' : 'DESC';
+    const offset = (Number(page) - 1) * Number(limit);
+
+    let query = `SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender,
+                        DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date_received,
+                        DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date,
+                        t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority, t.is_important, t.user_labels, t.attach_names, t.attach_links, 
+                        LEFT(t.${colBody}, 3000) as body,
+                        LEFT(t.${colBody}, 300) as body_preview 
+                 FROM \`${table}\` t`;
+    let countQuery = `SELECT COUNT(*) as total FROM \`${table}\` t`;
+    
+    let conditions = [];
+    let params = [];
+
+    // Exclude emails that are matched in Tenders Directory
+    conditions.push(`t.${colId} NOT IN (SELECT thread_db_id FROM tender_matches)`);
+
+    // Exclude @tendertiger.com ONLY when user explicitly enables the toggle
+    if (isExclude) {
+      conditions.push(`t.${colSender} NOT LIKE ?`);
+      params.push('%tendertiger.com%');
+    }
+
+    // Category/SubCategory filter using pre-compiled columns
+    if (category) {
+      if (subCategory) {
+        conditions.push(`LOWER(t.category) = LOWER(?) AND LOWER(t.sub_category) = LOWER(?)`);
+        params.push(category, subCategory);
+      } else {
+        conditions.push(`LOWER(t.category) = LOWER(?)`);
+        params.push(category);
+      }
+    }
+
+    // Company filter using pre-compiled columns
+    if (companyFilter && !codewordFilter) {
+      const isOutsider = String(companyFilter).toLowerCase() === 'outsider';
+      let cond = `(t.company = ? OR t.company LIKE ? OR t.company LIKE ? OR t.company LIKE ? OR t.company LIKE ? OR t.company LIKE ? OR t.company LIKE ?`;
+      if (isOutsider) cond += ` OR t.company IS NULL OR t.company = ''`;
+      cond += `)`;
+      conditions.push(cond);
+      params.push(
+        companyFilter,
+        `%,${companyFilter},%`,
+        `${companyFilter},%`,
+        `%,${companyFilter}`,
+        `%/${companyFilter}/%`,
+        `${companyFilter}/%`,
+        `%/${companyFilter}`
+      );
+    }
+
+    // Codeword filter using pre-compiled columns
+    if (codewordFilter) {
+      const [cwRows] = await conn.execute(
+        `SELECT company, category, sub_category FROM codewords WHERE LOWER(codeword) = LOWER(?)`,
+        [codewordFilter]
+      );
+      if (cwRows.length === 0) {
+        return res.json({ success: true, total: 0, page: Number(page), limit: Number(limit), emails: [] });
+      }
+      
+      const cwClauses = [];
+      for (const cw of cwRows) {
+        if (cw.sub_category) {
+          cwClauses.push(`((t.company = ? OR t.company LIKE ? OR t.company LIKE ? OR t.company LIKE ?) AND LOWER(t.category) = LOWER(?) AND LOWER(t.sub_category) = LOWER(?))`);
+          params.push(
+            cw.company, `%,${cw.company},%`, `${cw.company},%`, `%,${cw.company}`,
+            cw.category, cw.sub_category
+          );
+        } else {
+          cwClauses.push(`((t.company = ? OR t.company LIKE ? OR t.company LIKE ? OR t.company LIKE ?) AND LOWER(t.category) = LOWER(?))`);
+          params.push(
+            cw.company, `%,${cw.company},%`, `${cw.company},%`, `%,${cw.company}`,
+            cw.category
+          );
+        }
+      }
+      if (cwClauses.length > 0) {
+        conditions.push(`(${cwClauses.join(' OR ')})`);
+      } else {
+        return res.json({ success: true, total: 0, page: Number(page), limit: Number(limit), emails: [] });
+      }
+    }
+    if (label) {
+      conditions.push(`FIND_IN_SET(?, REPLACE(user_labels, ', ', ',')) > 0`);
+      params.push(label);
+    }
+    const { startUtc: allStartUtc, endUtc: allEndUtc } = getUtcRangeForIstDates(startDate, endDate);
+    if (allStartUtc) {
+      conditions.push(`${colDate} >= ?`);
+      params.push(allStartUtc);
+    }
+    if (allEndUtc) {
+      conditions.push(`${colDate} <= ?`);
+      params.push(allEndUtc);
+    }
+    if (search) {
+      conditions.push(`(${colSubject} LIKE ? OR ${colSender} LIKE ? OR ${colBody} LIKE ? OR ocr_text LIKE ?)`);
+      const searchParam = `%${search}%`;
+      params.push(searchParam, searchParam, searchParam, searchParam);
+    }
+    if (recipientFilter) {
+      conditions.push(`(t.to_details LIKE ? OR t.cc_details LIKE ?)`);
+      const recipientParam = `%${recipientFilter}%`;
+      params.push(recipientParam, recipientParam);
+    }
+
+    if (conditions.length > 0) {
+      const whereClause = ` WHERE ` + conditions.join(' AND ');
+      query += whereClause;
+      countQuery += whereClause;
+    }
+
+    query += ` ORDER BY CASE WHEN t.${colDate} IS NULL THEN 1 ELSE 0 END, t.${colDate} ${orderDir} LIMIT ${Number(limit)} OFFSET ${Number(offset)}`;
+    
+    const [countRows] = await conn.execute(countQuery, params);
+    const total = countRows[0].total;
+
+    const [rows] = await conn.execute(query, params);
+
+    const processedRows = rows.map(email => {
+      const companies = parseCompanies(email.company);
+      let fallbackCompany = '';
+      if (!email.company || String(email.company).toLowerCase() === 'outsider') {
+        fallbackCompany = computeFallbackCompany(email.sender, email.to_details);
+      }
+      const isFallback = Boolean(fallbackCompany);
+
+      const categoryLower = (email.category || '').toLowerCase();
+      if (categoryLower.includes('legal') || categoryLower.includes('sales')) {
+        const ruleDecision = getRuleBasedReplyDecision(email.subject, email.body, email.ai_summary);
+        if (ruleDecision.required) {
+          return { ...email, reply_required: 1, reply_reason: ruleDecision.reason, companies, fallback_company: fallbackCompany, is_fallback_company: isFallback, codewords: [] };
+        }
+        return { ...email, reply_required: 0, reply_reason: '', companies, fallback_company: fallbackCompany, is_fallback_company: isFallback, codewords: [] };
+      }
+      return { ...email, reply_required: 0, reply_reason: '', companies, fallback_company: fallbackCompany, is_fallback_company: isFallback, codewords: [] };
+    });
+
+    // For Sales/Legal emails where regex did not detect urgent reply, run AI-based deeper check
+    // Only runs when the user explicitly requests the urgent view (saves Groq quota)
+    const { urgentOnly } = req.query;
+    if (urgentOnly === 'true' && aiAnalyticsEnabled()) {
+      (async () => {
+        const salesLegalToCheck = processedRows.filter(e => {
+          const cat = (e.category || '').toLowerCase();
+          return (cat.includes('legal') || cat.includes('sales')) && e.reply_required === 0;
+        });
+        for (const email of salesLegalToCheck.slice(0, 10)) {
+          try {
+            const aiDecision = await getAnalyticsReplyDecision(email.subject, email.body, email.ai_summary);
+            if (aiDecision.required) {
+              email.reply_required = 1;
+              email.reply_reason = aiDecision.reason;
+            }
+          } catch (err) {
+            console.error('[AI Urgent Check Failed]', err.message);
+          }
+        }
+      })();
+    }
+
+    // Filter for urgentOnly mode: only Sales/Legal with reply_required === 1
+    let finalEmails = processedRows;
+    if (urgentOnly === 'true') {
+      finalEmails = processedRows.filter(e => {
+        const cat = (e.category || '').toLowerCase();
+        return (cat.includes('legal') || cat.includes('sales')) && e.reply_required === 1;
+      });
+    }
+
+    // Asynchronously classify any 'General' or uncategorized emails on this page (Sales/Legal only)
+    const uncategorized = processedRows.filter(e => !e.category || e.category === 'General' || !e.sub_category);
+    if (uncategorized.length > 0) {
+      (async () => {
+        let backgroundConn;
+        try {
+          backgroundConn = await getDbConnection();
+          const subset = uncategorized.slice(0, 5);
+          for (const email of subset) {
+            const aiResult = await getEmailAiClassification(email.subject, email.body);
+            if (aiResult) {
+              const category = aiResult.category.trim();
+              const isSalesOrLegal = category.toLowerCase() === 'sales' || category.toLowerCase() === 'legal';
+              if (isSalesOrLegal) {
+                console.log(`[Background Explorer Category] ID ${email.id} -> Category: "${category}", Sub-Category: "${aiResult.sub_category}"`);
+                await backgroundConn.execute(
+                  `UPDATE \`${table}\` SET category = ?, sub_category = ? WHERE id = ?`,
+                  [category, aiResult.sub_category || '', email.id]
+                );
+              }
+            }
+          }
+        } catch (bgErr) {
+          console.error('[Background Page Classification Failed]', bgErr.message);
+        } finally {
+          if (backgroundConn) await backgroundConn.end();
+        }
+      })();
+    }
+
+    res.json({
+      success: true,
+      total: urgentOnly === 'true' ? finalEmails.length : total,
+      page: Number(page),
+      limit: Number(limit),
+      emails: finalEmails
+    });
+  } catch (error) {
+    console.warn('[DB Error] Falling back to in-memory mock emails:', error.message);
+    const fallbackResult = filterFallbackEmails(req.query);
+    res.json(fallbackResult);
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 11. Get specific email details (returns full body and attachment metadata)
+app.get('/api/emails/:id', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const table = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const colSubject = process.env.DB_COL_SUBJECT || 'subject';
+    const colBody = process.env.DB_COL_BODY || 'body';
+    const colSender = process.env.DB_COL_SENDER || 'sender';
+    const colDate = process.env.DB_COL_DATE || 'date';
+
+    const [rows] = await conn.execute(`
+      SELECT ${colId} as id, thread_id, ${colSubject} as subject, ${colBody} as body, ${colSender} as sender, ${colDate} as date,
+             cc_details, to_details, company, category, sub_category, priority, is_important, user_labels, attach_names, attach_links, ocr_text, ai_summary
+      FROM \`${table}\`
+      WHERE ${colId} = ?
+    `, [req.params.id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Email not found' });
+    }
+
+    const email = rows[0];
+    let fallbackCompany = '';
+    if (!email.company || String(email.company).toLowerCase() === 'outsider') {
+      fallbackCompany = computeFallbackCompany(email.sender, email.to_details);
+    }
+    res.json({ ...email, fallback_company: fallbackCompany, is_fallback_company: Boolean(fallbackCompany) });
+  } catch (error) {
+    console.warn('[DB Error] Getting specific email details from fallback:', error.message);
+    const email = fallbackEmails.find(e => String(e.id) === String(req.params.id));
+    if (!email) {
+      return res.status(404).json({ error: 'Email not found in fallback cache' });
+    }
+    res.json(email);
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 12. Update custom labels for a specific email & propagate to related emails using AI
+app.post('/api/emails/:id/labels', async (req, res) => {
+  let conn;
+  try {
+    const { labels } = req.body; // Array of string labels or single string
+    let labelStr = null;
+    let newLabelsList = [];
+    if (Array.isArray(labels)) {
+      newLabelsList = labels.map(l => l.trim()).filter(l => l !== '');
+      labelStr = newLabelsList.join(', ');
+    } else if (typeof labels === 'string') {
+      newLabelsList = labels.split(',').map(l => l.trim()).filter(l => l !== '');
+      labelStr = newLabelsList.join(', ');
+    }
+
+    conn = await getDbConnection();
+    const table = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const colSubject = process.env.DB_COL_SUBJECT || 'subject';
+    const colBody = process.env.DB_COL_BODY || 'body';
+    const colSender = process.env.DB_COL_SENDER || 'sender';
+
+    const emailId = req.params.id;
+
+    // 1. Fetch the target email to get details and its previous labels
+    const [emailRows] = await conn.execute(`
+      SELECT ${colId} as id, ${colSubject} as subject, ${colBody} as body, ${colSender} as sender, user_labels
+      FROM \`${table}\`
+      WHERE ${colId} = ?
+    `, [emailId]);
+
+    if (emailRows.length === 0) {
+      return res.status(404).json({ error: 'Email not found' });
+    }
+
+    const targetEmail = emailRows[0];
+    const prevLabelsList = targetEmail.user_labels 
+      ? targetEmail.user_labels.split(',').map(l => l.trim()).filter(l => l !== '')
+      : [];
+
+    // 2. Identify newly added labels
+    const newlyAddedLabels = newLabelsList.filter(l => !prevLabelsList.includes(l));
+
+    // 3. Update the target email's labels in the database
+    await conn.execute(`
+      UPDATE \`${table}\`
+      SET user_labels = ?
+      WHERE ${colId} = ?
+    `, [labelStr, emailId]);
+
+    let totalPropagated = 0;
+    const propagatedDetails = [];
+
+    // 4. Trigger AI propagation for each newly added label
+    const { client, model, error } = getAiClient();
+    if (newlyAddedLabels.length > 0 && client && !error) {
+      for (const newLabel of newlyAddedLabels) {
+        try {
+          console.log(`[AI Label Propagation] Analyzing email for new label: "${newLabel}"`);
+          
+          // Step A: AI Rule Generation (one tiny API call)
+          const rulePrompt = `Analyze the following email which was labeled "${newLabel}".
+Generate a list of 2 to 4 highly specific keyword phrases (such as project names, PO numbers, unique company names, or distinct subject tokens) that uniquely identify emails related to this exact topic.
+Optionally, specify a sender domain to match.
+Respond with strict JSON only in this exact shape:
+{
+  "sqlKeywords": ["phrase1", "phrase2"],
+  "senderDomain": "optional_domain_to_match.com"
+}
+
+Subject: ${targetEmail.subject}
+Sender: ${targetEmail.sender}
+Body Preview: ${(targetEmail.body || '').substring(0, 800)}`;
+
+          const ruleCompletion = await callChatCompletionsWithFallback({
+            messages: [
+              { role: 'system', content: 'You generate highly specific search rules. Respond with strict JSON only.' },
+              { role: 'user', content: rulePrompt }
+            ],
+            max_tokens: 150,
+            temperature: 0
+          });
+
+          const ruleContent = ruleCompletion?.choices?.[0]?.message?.content?.trim();
+          if (!ruleContent) continue;
+
+          const rule = extractRuleFromJson(ruleContent);
+          const keywords = Array.isArray(rule.sqlKeywords) ? rule.sqlKeywords.filter(k => k.trim().length > 1) : [];
+          const senderDomain = typeof rule.senderDomain === 'string' ? rule.senderDomain.trim() : '';
+
+          if (keywords.length === 0 && !senderDomain) {
+            console.log(`[AI Label Propagation] No rules generated for "${newLabel}".`);
+            continue;
+          }
+
+          // Step B: SQL Candidate Search (Zero-token DB query)
+          let sql = `
+            SELECT ${colId} as id, ${colSubject} as subject, ${colSender} as sender, LEFT(${colBody}, 250) as body_preview, user_labels
+            FROM \`${table}\`
+            WHERE ${colId} != ?
+          `;
+          const sqlParams = [emailId];
+          const searchConditions = [];
+
+          if (senderDomain) {
+            searchConditions.push(`${colSender} LIKE ?`);
+            sqlParams.push(`%${senderDomain}%`);
+          }
+
+          keywords.forEach(kw => {
+            searchConditions.push(`${colSubject} LIKE ? OR ${colBody} LIKE ?`);
+            sqlParams.push(`%${kw}%`, `%${kw}%`);
+          });
+
+          if (searchConditions.length > 0) {
+            sql += ` AND (${searchConditions.join(' OR ')})`;
+          }
+
+          // Exclude blacklisted senders
+          sql += `
+            AND ${colSender} NOT LIKE '%protulchatterjee2020@gmail.com%'
+            AND ${colSender} NOT LIKE '%biswajit@omclearing.com%'
+            AND ${colSender} NOT LIKE '%automation@app.smartsheet.com%'
+            AND ${colSender} NOT LIKE '%hr@laserpowerinfra.com%'
+            AND ${colSender} NOT LIKE '%tendertiger.com%'
+          `;
+
+          // Limit to 60 candidates to be extremely token-efficient
+          sql += ` LIMIT 60`;
+
+          const [candidates] = await conn.execute(sql, sqlParams);
+          console.log(`[AI Label Propagation] SQL search found ${candidates.length} candidates for "${newLabel}"`);
+
+          if (candidates.length > 0) {
+            // Step C: AI Batch Validation (one single, highly compact API call)
+            const compactCandidates = candidates.map(c => ({
+              id: c.id,
+              subject: c.subject,
+              sender: c.sender,
+              body_preview: c.body_preview
+            }));
+
+            const valPrompt = `The user has labeled the following reference email as "${newLabel}":
+Subject: ${targetEmail.subject}
+Sender: ${targetEmail.sender}
+Body Snippet: ${(targetEmail.body || '').substring(0, 400)}
+
+Below is a list of candidate emails. Select the IDs of the emails that are highly related to the reference email and should also receive the "${newLabel}" label.
+Respond with strict JSON only (a flat array of matching integer IDs):
+[id1, id2, ...]
+
+Candidates:
+${JSON.stringify(compactCandidates, null, 2)}`;
+
+            const valCompletion = await callChatCompletionsWithFallback({
+              messages: [
+                { role: 'system', content: 'You select matching email IDs based on reference content. Respond with a JSON array of matching IDs only.' },
+                { role: 'user', content: valPrompt }
+              ],
+              max_tokens: 150,
+              temperature: 0
+            });
+
+            const valContent = valCompletion?.choices?.[0]?.message?.content?.trim();
+            if (valContent) {
+              const matchedIds = extractArrayFromJson(valContent);
+              if (Array.isArray(matchedIds) && matchedIds.length > 0) {
+                // Step D: Database Label Update
+                const idsToUpdate = matchedIds.map(id => Number(id)).filter(id => !isNaN(id));
+                
+                if (idsToUpdate.length > 0) {
+                  const placeholders = idsToUpdate.map(() => '?').join(',');
+                  const [emailsToUpdate] = await conn.execute(`
+                    SELECT ${colId} as id, ${colSubject} as subject, user_labels FROM \`${table}\`
+                    WHERE ${colId} IN (${placeholders})
+                  `, idsToUpdate);
+
+                  for (const email of emailsToUpdate) {
+                    const currentLabels = email.user_labels 
+                      ? email.user_labels.split(',').map(l => l.trim()).filter(l => l !== '')
+                      : [];
+                    
+                    if (!currentLabels.includes(newLabel)) {
+                      currentLabels.push(newLabel);
+                      const updatedLabelsStr = currentLabels.join(', ');
+                      
+                      await conn.execute(`
+                        UPDATE \`${table}\`
+                        SET user_labels = ?
+                        WHERE ${colId} = ?
+                      `, [updatedLabelsStr, email.id]);
+
+                      totalPropagated++;
+                      propagatedDetails.push({ id: email.id, subject: email.subject });
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch (aiErr) {
+          console.error(`[AI Label Propagation Failed] for "${newLabel}":`, aiErr.message);
+        }
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      labels: labelStr,
+      propagatedCount: totalPropagated,
+      propagatedEmails: propagatedDetails
+    });
+  } catch (error) {
+    console.warn('[DB Error] Updating custom labels:', error.message);
+    
+    // Fallback cache logic
+    const { labels } = req.body;
+    let labelStr = '';
+    if (Array.isArray(labels)) {
+      labelStr = labels.map(l => l.trim()).filter(l => l !== '').join(', ');
+    } else if (typeof labels === 'string') {
+      labelStr = labels.trim();
+    }
+    
+    const email = fallbackEmails.find(e => String(e.id) === String(req.params.id));
+    if (email) {
+      email.user_labels = labelStr;
+      res.json({ success: true, labels: labelStr, fallbackMode: true });
+    } else {
+      res.status(500).json({ error: 'Failed to update custom labels', details: error.message });
+    }
+  } finally {
+    if (conn) {
+      await conn.end();
+    }
+  }
+});
+
+// 13. Get list of all unique custom labels currently assigned in the database
+app.get('/api/labels', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const table = process.env.DB_TABLE || 'threads';
+    const [rows] = await conn.execute(`
+      SELECT DISTINCT user_labels FROM \`${table}\` WHERE user_labels IS NOT NULL AND user_labels != ''
+    `);
+    
+    const uniqueLabels = new Set();
+    rows.forEach(r => {
+      if (r.user_labels) {
+        r.user_labels.split(',').forEach(l => {
+          const clean = l.trim();
+          if (clean) uniqueLabels.add(clean);
+        });
+      }
+    });
+
+    res.json(Array.from(uniqueLabels).sort());
+  } catch (error) {
+    console.warn('[DB Error] Fetching unique labels from fallback:', error.message);
+    const uniqueLabels = new Set();
+    fallbackEmails.forEach(e => {
+      if (e.user_labels) {
+        e.user_labels.split(',').forEach(l => {
+          const clean = l.trim();
+          if (clean) uniqueLabels.add(clean);
+        });
+      }
+    });
+    res.json(Array.from(uniqueLabels).sort());
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// Helper function to extract email addresses
+function extractEmailAddresses(str) {
+  if (!str) return [];
+  const regex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+  return str.match(regex) || [];
+}
+
+async function backfillThreadsCompanyAndCodeword(conn) {
+  try {
+    const start = Date.now();
+    const threadsTable = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    
+    // 1. Fetch all mappings from sender_company_mapping
+    const [scmRows] = await conn.execute('SELECT sender_name, companies, category, sub_category FROM sender_company_mapping');
+    const scmMap = new Map();
+    scmRows.forEach(r => {
+      let comps = [];
+      try {
+        comps = typeof r.companies === 'string' ? JSON.parse(r.companies) : r.companies;
+      } catch (e) {}
+      if (Array.isArray(comps)) {
+        scmMap.set(r.sender_name.toLowerCase().trim(), {
+          companies: comps.map(c => canonicalCompany(c)),
+          category: r.category || '',
+          sub_category: r.sub_category || ''
+        });
+      }
+    });
+
+    // 2. Fetch all mappings from all_email
+    const [aeRows] = await conn.execute('SELECT NAME, COMPANY, CATEGORY, SUB_CATEGORY FROM all_email WHERE NAME IS NOT NULL AND NAME != \'\'');
+    const aeMap = new Map();
+    aeRows.forEach(r => {
+      const email = r.NAME.toLowerCase().trim();
+      const comp = canonicalCompany(r.COMPANY);
+      if (comp) {
+        aeMap.set(email, {
+          company: comp,
+          category: r.CATEGORY || '',
+          sub_category: r.SUB_CATEGORY || ''
+        });
+      }
+    });
+
+    const resolveEmailCandidate = (email) => {
+      const compSet = new Set();
+      let category = '';
+      let subCategory = '';
+      let internal = '';
+      if (scmMap.has(email)) {
+        const scm = scmMap.get(email);
+        scm.companies.forEach(c => compSet.add(c));
+        if (!category && scm.category) {
+          category = scm.category;
+          subCategory = scm.sub_category;
+        }
+        if ((scm.category || '').toUpperCase() === 'INTERNAL') {
+          internal = scm.companies.join(',');
+        }
+      }
+      if (aeMap.has(email)) {
+        const ae = aeMap.get(email);
+        compSet.add(ae.company);
+        if (!category && ae.category) {
+          category = ae.category;
+          subCategory = ae.sub_category;
+        }
+        if ((ae.category || '').toUpperCase() === 'INTERNAL') {
+          internal = internal || ae.company;
+        }
+      }
+      if (compSet.size === 0) return null;
+      return {
+        companyStr: internal || Array.from(compSet).join(','),
+        category,
+        subCategory,
+        isInternal: Boolean(internal)
+      };
+    };
+
+    const pickInternalFirst = (emails) => {
+      let first = null;
+      for (const e of emails) {
+        const cand = resolveEmailCandidate(e);
+        if (!cand) continue;
+        if (cand.isInternal) return cand;
+        if (!first) first = cand;
+      }
+      return first;
+    };
+
+    // 3. Find all threads that need backfilling
+    const [threads] = await conn.execute(`
+      SELECT ${colId} as id, sender, to_details, cc_details, body, subject, category, sub_category 
+      FROM \`${threadsTable}\` 
+    `);
+    
+    if (threads.length === 0) {
+      console.log(`[Backfill Threads] No threads to backfill. Time taken: ${Date.now() - start}ms`);
+      return;
+    }
+    console.log(`[Backfill] Processing ${threads.length} threads in memory...`);
+
+    const updates = [];
+    const autoRegisteredEmails = new Map();
+
+    for (const t of threads) {
+      const toEmails = extractEmailAddresses(t.to_details).map(e => e.toLowerCase().trim()).filter(Boolean);
+      const senderEmails = extractEmailAddresses(t.sender).map(e => e.toLowerCase().trim()).filter(Boolean);
+      const ccEmails = extractEmailAddresses(t.cc_details).map(e => e.toLowerCase().trim()).filter(Boolean);
+
+      // Check for puja.agarwal blacklist
+      if (senderEmails.some(e => e.includes('puja.agarwal')) || toEmails.some(e => e.includes('puja.agarwal')) || ccEmails.some(e => e.includes('puja.agarwal'))) {
+        // Skip multi-company tagging for blacklisted user
+      }
+
+      // Tier 1: Receiver (To:)
+      let winner = pickInternalFirst(toEmails);
+
+      // Tier 2: Sender (From:)
+      if (!winner) {
+        winner = pickInternalFirst(senderEmails);
+      }
+
+      // Tier 3: CC (Cc:)
+      if (!winner) {
+        winner = pickInternalFirst(ccEmails);
+      }
+
+      // Fallback Company calculation if not matched in all_email
+      let fallbackComp = '';
+      if (!winner || !winner.isInternal) {
+        fallbackComp = computeFallbackCompany(t.sender, t.to_details, t.cc_details, t.subject);
+      }
+
+      let finalCompany = 'Outsider';
+      if (winner && winner.isInternal) {
+        finalCompany = pickPrimaryCompany(winner.companyStr);
+      } else if (fallbackComp) {
+        finalCompany = fallbackComp;
+
+        // Auto-register missing email addresses into all_email (mail_db)
+        const allAddr = [...toEmails, ...senderEmails, ...ccEmails];
+        for (const addr of allAddr) {
+          const matchedComp = fallbackCompanyFromEmail(addr);
+          if (matchedComp && !aeMap.has(addr) && !autoRegisteredEmails.has(addr)) {
+            autoRegisteredEmails.set(addr, matchedComp);
+          }
+        }
+      }
+
+      // Strict Direct DB Category & Sub-Category Resolution
+      const allRecipients = Array.from(new Set([...toEmails, ...ccEmails]));
+      let finalCategory = null;
+      let finalSubCategory = null;
+
+      if (allRecipients.length > 0) {
+        let allInternal = true;
+        let nonInternalCand = null;
+        let internalCand = null;
+
+        for (const r of allRecipients) {
+          const cand = resolveEmailCandidate(r);
+          const catUpper = cand && cand.category ? cand.category.toUpperCase() : '';
+          const isDomInternal = Boolean(fallbackCompanyFromEmail(r));
+          const localP = String(r).split('@')[0];
+          const isKwInternal = COMPANY_KEYWORD_PATTERNS.some(pat => pat.test(localP));
+
+          if (catUpper === 'INTERNAL' || catUpper === 'STAFF' || isDomInternal || isKwInternal) {
+            if (!internalCand && cand) internalCand = cand;
+          } else {
+            allInternal = false;
+            if (!nonInternalCand && cand) nonInternalCand = cand;
+          }
+        }
+
+        if (allInternal) {
+          finalCategory = 'INTERNAL';
+          finalSubCategory = internalCand ? internalCand.subCategory : null;
+        } else {
+          finalCategory = (nonInternalCand && nonInternalCand.category) ? nonInternalCand.category : 'OUTSIDER';
+          finalSubCategory = (nonInternalCand && nonInternalCand.subCategory) ? nonInternalCand.subCategory : null;
+        }
+      } else if (senderEmails.length > 0) {
+        // Sender Fallback for Category if no recipients in To/CC
+        const senderCand = resolveEmailCandidate(senderEmails[0]);
+        if (senderCand && senderCand.category) {
+          finalCategory = senderCand.category;
+          finalSubCategory = senderCand.subCategory || null;
+        } else {
+          finalCategory = 'OUTSIDER';
+        }
+      }
+
+      updates.push({ 
+        id: t.id, 
+        company: finalCompany, 
+        category: finalCategory || 'Outsider', 
+        sub_category: finalSubCategory || null 
+      });
+    }
+
+    // Auto-insert newly detected company emails into all_email table
+    if (autoRegisteredEmails.size > 0) {
+      console.log(`[Auto-Register] Inserting ${autoRegisteredEmails.size} new domain email addresses into all_email DB...`);
+      for (const [emailAddr, comp] of autoRegisteredEmails.entries()) {
+        try {
+          await conn.execute(
+            `INSERT IGNORE INTO all_email (EMAIL, COMPANY, CATEGORY, SUB_CATEGORY) VALUES (?, ?, 'General', 'Official')`,
+            [emailAddr, comp]
+          );
+        } catch (e) {
+          console.error(`Auto-register error for ${emailAddr}:`, e.message);
+        }
+      }
+    }
+
+    console.log(`[Backfill Threads] Updating ${updates.length} threads in database...`);
+    
+    const updateChunkSize = 250;
+    for (let i = 0; i < updates.length; i += updateChunkSize) {
+      const chunk = updates.slice(i, i + updateChunkSize);
+      await Promise.all(chunk.map(async (u) => {
+        await conn.execute(
+          `UPDATE \`${threadsTable}\` SET company = ?, category = ?, sub_category = ? WHERE ${colId} = ?`,
+          [u.company, u.category, u.sub_category, u.id]
+        );
+      }));
+      await new Promise(resolve => setImmediate(resolve));
+    }
+
+    console.log(`[Backfill Threads] Completed successfully in ${Date.now() - start}ms.`);
+  } catch (err) {
+    console.error('[Backfill Threads] Failed:', err.message);
+  }
+}
+
+// 15a. Get list of all codewords
+app.get('/api/codewords', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const [rows] = await conn.execute('SELECT * FROM codewords ORDER BY codeword ASC');
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch codewords', details: err.message });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 15b. Create codeword
+app.post('/api/codewords', async (req, res) => {
+  let conn;
+  try {
+    const { codeword, company, category, sub_category, description } = req.body;
+    if (!codeword || !company || !category) {
+      return res.status(400).json({ error: 'Codeword, company, and category are required' });
+    }
+    conn = await getDbConnection();
+    await conn.execute(
+      'INSERT INTO codewords (codeword, company, category, sub_category, description) VALUES (?, ?, ?, ?, ?)',
+      [codeword.trim(), company.trim(), category.trim(), sub_category ? sub_category.trim() : null, description || null]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[Codewords] Failed to create:', err.message);
+    if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Duplicate codeword or combination already exists' });
+    res.status(500).json({ error: 'Failed to create codeword', details: err.message });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 15c. Update codeword
+app.put('/api/codewords/:id', async (req, res) => {
+  let conn;
+  try {
+    const { codeword, company, category, sub_category, description } = req.body;
+    conn = await getDbConnection();
+    const [result] = await conn.execute(
+      'UPDATE codewords SET codeword = ?, company = ?, category = ?, sub_category = ?, description = ? WHERE id = ?',
+      [codeword, company, category, sub_category, description || null, req.params.id]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Codeword not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update codeword', details: err.message });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 15d. Delete codeword
+app.delete('/api/codewords/:id', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const [result] = await conn.execute('DELETE FROM codewords WHERE id = ?', [req.params.id]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Codeword not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete codeword', details: err.message });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// ----------------------------------------------------
+// 16. MATCHING RULES ENDPOINTS
+// ----------------------------------------------------
+
+// 16a. Get matching rules
+app.get('/api/matching-rules', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const [rows] = await conn.execute('SELECT * FROM matching_rules ORDER BY id DESC');
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching matching rules:', err.message);
+    res.status(500).json({ error: 'Failed to fetch matching rules' });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 16b. Create matching rule
+app.post('/api/matching-rules', async (req, res) => {
+  let conn;
+  try {
+    const { rule } = req.body;
+    if (!rule || !rule.trim()) {
+      return res.status(400).json({ error: 'Rule text is required' });
+    }
+    conn = await getDbConnection();
+    const [result] = await conn.execute(
+      'INSERT INTO matching_rules (rule) VALUES (?)',
+      [rule.trim()]
+    );
+    res.json({ success: true, id: result.insertId });
+  } catch (err) {
+    console.error('Error adding matching rule:', err.message);
+    res.status(500).json({ error: 'Failed to add matching rule' });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 16c. Delete matching rule
+app.delete('/api/matching-rules/:id', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    await conn.execute('DELETE FROM matching_rules WHERE id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting matching rule:', err.message);
+    res.status(500).json({ error: 'Failed to delete matching rule' });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// ----------------------------------------------------
+// 17. SENDER MAPPING ENDPOINTS
+// ----------------------------------------------------
+
+// 17a. Get sender mappings
+app.get('/api/sender-mappings', async (req, res) => {
+  let conn;
+  try {
+    const { search } = req.query;
+    conn = await getDbConnection();
+    let query = 'SELECT * FROM sender_company_mapping';
+    const params = [];
+
+    if (search && search.trim()) {
+      query += ' WHERE sender_name LIKE ? OR category LIKE ? OR sub_category LIKE ?';
+      const term = `%${search.trim()}%`;
+      params.push(term, term, term);
+    }
+    query += ' ORDER BY sender_name ASC';
+
+    const [rows] = await conn.execute(query, params);
+    const parsedRows = rows.map(r => {
+      let companies = [];
+      if (r.companies) {
+        try {
+          companies = typeof r.companies === 'string' ? JSON.parse(r.companies) : r.companies;
+          if (!Array.isArray(companies)) {
+            companies = String(r.companies).split(/[\/,]+/).map(c => c.trim()).filter(Boolean);
+          }
+        } catch (e) {
+          companies = String(r.companies).split(/[\/,]+/).map(c => c.trim()).filter(Boolean);
+        }
+      }
+      return {
+        ...r,
+        companies
+      };
+    });
+    res.json(parsedRows);
+  } catch (err) {
+    console.error('Error fetching sender mappings:', err.message);
+    res.status(500).json({ error: 'Failed to fetch sender mappings' });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 17b. Create sender mapping
+app.post('/api/sender-mappings', async (req, res) => {
+  let conn;
+  try {
+    const { sender_name, companies, category, sub_category } = req.body;
+    if (!sender_name || !companies) {
+      return res.status(400).json({ error: 'sender_name and companies are required' });
+    }
+    conn = await getDbConnection();
+    const companiesStr = JSON.stringify(Array.isArray(companies) ? companies : [companies]);
+    const [result] = await conn.execute(
+      'INSERT INTO sender_company_mapping (sender_name, companies, category, sub_category) VALUES (?, ?, ?, ?)',
+      [sender_name.trim(), companiesStr, category ? category.trim() : null, sub_category ? sub_category.trim() : null]
+    );
+    res.json({ success: true, id: result.insertId });
+  } catch (err) {
+    console.error('Error creating sender mapping:', err.message);
+    res.status(500).json({ error: 'Failed to create sender mapping' });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 17c. Update sender mapping
+app.put('/api/sender-mappings/:id', async (req, res) => {
+  let conn;
+  try {
+    const { companies, category, sub_category } = req.body;
+    conn = await getDbConnection();
+    const companiesStr = JSON.stringify(Array.isArray(companies) ? companies : [companies]);
+    await conn.execute(
+      'UPDATE sender_company_mapping SET companies = ?, category = ?, sub_category = ? WHERE id = ?',
+      [companiesStr, category ? category.trim() : null, sub_category ? sub_category.trim() : null, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error updating sender mapping:', err.message);
+    res.status(500).json({ error: 'Failed to update sender mapping' });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 17d. Delete sender mapping
+app.delete('/api/sender-mappings/:id', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    await conn.execute('DELETE FROM sender_company_mapping WHERE id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting sender mapping:', err.message);
+    res.status(500).json({ error: 'Failed to delete sender mapping' });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 17e. Upload sender mappings Excel/CSV
+const uploadMiddleware = multer({ dest: 'uploads/' });
+app.post('/api/sender-mappings/upload', uploadMiddleware.single('file'), async (req, res) => {
+  let conn;
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    const companies = req.body.companies ? JSON.parse(req.body.companies) : [];
+    const category = req.body.category ? req.body.category.trim() : null;
+    const sub_category = req.body.sub_category ? req.body.sub_category.trim() : null;
+
+    const workbook = xlsx.readFile(req.file.path);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const data = xlsx.utils.sheet_to_json(sheet);
+
+    conn = await getDbConnection();
+    let inserted = 0;
+    const companiesStr = JSON.stringify(companies);
+
+    for (const row of data) {
+      const senderName = row.sender_name || row['Sender Name'] || row.email || row.Email || row.name || row.Name;
+      if (senderName && String(senderName).trim()) {
+        await conn.execute(
+          'INSERT INTO sender_company_mapping (sender_name, companies, category, sub_category) VALUES (?, ?, ?, ?)',
+          [String(senderName).trim(), companiesStr, category, sub_category]
+        );
+        inserted++;
+      }
+    }
+
+    // Clean up uploaded file
+    try { fs.unlinkSync(req.file.path); } catch (e) {}
+
+    res.json({ success: true, count: inserted });
+  } catch (err) {
+    console.error('Error uploading sender mappings:', err.message);
+    res.status(500).json({ error: 'Failed to process uploaded file', details: err.message });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 15f. Get distinct categories from sender_company_mapping and all_email
+app.get('/api/sender-categories', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const [rows] = await conn.execute(`
+      SELECT DISTINCT category FROM (
+        SELECT category COLLATE utf8mb4_unicode_ci as category FROM sender_company_mapping WHERE category IS NOT NULL AND category != ''
+        UNION
+        SELECT CATEGORY COLLATE utf8mb4_unicode_ci FROM all_email WHERE CATEGORY IS NOT NULL AND CATEGORY != ''
+      ) as combined ORDER BY category
+    `);
+    res.json(rows.map(r => r.category));
+  } catch (err) {
+    console.error('[Categories] Failed:', err.message);
+    res.json([]);
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 15g. Get distinct sub_categories filtered by category from sender_company_mapping and all_email
+app.get('/api/sender-subcategories', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const { category } = req.query;
+    if (!category) return res.json([]);
+
+    const subCategories = [];
+
+    // Query sender_company_mapping (column may not exist on some servers)
+    try {
+      const [scmRows] = await conn.execute(
+        `SELECT DISTINCT sub_category FROM sender_company_mapping WHERE category = ? AND sub_category IS NOT NULL AND sub_category != ''`,
+        [category]
+      );
+      scmRows.forEach(r => { if (r.sub_category) subCategories.push(r.sub_category); });
+    } catch (e) { /* column may not exist */ }
+
+    // Query all_email
+    try {
+      const [aeRows] = await conn.execute(
+        `SELECT DISTINCT SUB_CATEGORY FROM all_email WHERE CATEGORY = ? AND SUB_CATEGORY IS NOT NULL AND SUB_CATEGORY != ''`,
+        [category]
+      );
+      aeRows.forEach(r => { if (r.SUB_CATEGORY) subCategories.push(r.SUB_CATEGORY); });
+    } catch (e) { /* column may not exist */ }
+
+    res.json([...new Set(subCategories)].sort());
+  } catch (err) {
+    console.error('[Subcategories] Failed:', err.message);
+    res.json([]);
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// 15h. Get distinct companies from sender_company_mapping and all_email
+app.get('/api/sender-companies', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const companiesMap = new Map();
+
+    const addCompany = (value) => {
+      if (!value) return;
+      const trimmed = value.trim();
+      if (!trimmed) return;
+      const normalized = trimmed.toLowerCase();
+      if (!companiesMap.has(normalized)) {
+        companiesMap.set(normalized, trimmed);
+      }
+    };
+
+    // Fetch from sender_company_mapping
+    const [mappingRows] = await conn.execute('SELECT DISTINCT companies FROM sender_company_mapping');
+    for (const row of mappingRows) {
+      if (row.companies) {
+        const list = typeof row.companies === 'string' ? JSON.parse(row.companies) : row.companies;
+        if (Array.isArray(list)) {
+          list.forEach(c => addCompany(c));
+        } else if (typeof row.companies === 'string') {
+          row.companies.split(/[\/ ,]+/).forEach(c => addCompany(c));
+        }
+      }
+    }
+    
+    // Fetch from all_email
+    const [allEmailRows] = await conn.execute("SELECT DISTINCT COMPANY FROM all_email WHERE COMPANY IS NOT NULL AND COMPANY != ''");
+    for (const row of allEmailRows) {
+      if (row.COMPANY) {
+        const split = row.COMPANY.split(/[\/,]+/);
+        split.forEach(c => addCompany(c));
+      }
+    }
+
+    const finalCompanies = Array.from(companiesMap.values()).sort((a, b) => a.localeCompare(b));
+    res.json(finalCompanies);
+  } catch (err) {
+    console.error('[Companies] Failed:', err.message);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (conn) await conn.end();
+  }
+});
+
+// Serve frontend assets in production (Vite builds to parent/dist)
+const distPath = fs.existsSync(path.join(__dirname, 'dist'))
+  ? path.join(__dirname, 'dist')
+  : path.join(__dirname, '..', 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get('/*splat', (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
+
+// Real-time / Immediate New Mail Sync Endpoint (Triggered by Emails_agent when new email arrives)
+app.post('/api/sync/scan-new', async (req, res) => {
+  try {
+    console.log('[API] Immediate new email scan triggered by email agent...');
+    const result = await runSync(false);
+    res.json({ success: true, message: 'New incoming email scan completed successfully', result });
+  } catch (err) {
+    if (err.message === 'Sync already in progress') {
+      return res.json({ success: true, message: 'Sync already in progress, scanning active' });
+    }
+    console.error('Immediate email scan failed:', err);
+    res.status(500).json({ error: 'Scan failed', details: err.message });
+  }
+});
+
+// Start background automatic sync (default: 4 hours / 14,400,000 ms)
+// To change interval: set SYNC_INTERVAL_MS environment variable (in milliseconds)
+// To force full sync of all data: set FORCE_FULL_SYNC=true
+const AUTO_SYNC_INTERVAL = Number(process.env.SYNC_INTERVAL_MS) || 4 * 60 * 60 * 1000;  // 4 hours
+console.log(`Scheduling background auto-sync every ${AUTO_SYNC_INTERVAL / 1000} seconds (${AUTO_SYNC_INTERVAL / (60 * 60 * 1000)} hours).`);
+setInterval(async () => {
+  try {
+    await runSync();
+  } catch (err) {
+    // If sync is already running (e.g. user triggered manual sync), we skip silently
+    if (err.message !== 'Sync already in progress') {
+      console.error('Scheduled background sync failed:', err.message);
+    }
+  }
+}, AUTO_SYNC_INTERVAL);
+
+// Start Server
+app.listen(PORT, async () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+  // Run initial sync on startup to populate match data immediately
+  try {
+    console.log('Running initial background sync on startup...');
+    await runSync();
+    console.log('Initial background sync completed.');
+  } catch (err) {
+    if (err.message !== 'Sync already in progress') {
+      console.error('Initial background sync failed:', err.message);
+    }
+  }
+});
+
