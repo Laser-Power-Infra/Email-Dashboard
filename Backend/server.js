@@ -228,7 +228,7 @@ let dbPool = null;
 function getDbPool() {
   if (!dbPool) {
     const dbConfig = {
-      host: process.env.DB_HOST || 'localhost',
+      host: process.env.DB_HOST || '192.168.1.190',
       port: Number(process.env.DB_PORT) || 3306,
       user: process.env.DB_USER || 'root',
       password: process.env.DB_PASSWORD,
@@ -857,6 +857,9 @@ function findAuthFile(filename) {
     path.join(__dirname, '..', filename),
     path.join(process.cwd(), filename),
     path.join(process.cwd(), '..', filename),
+    path.join(__dirname, '..', 'Emails_agent', filename),
+    path.join(process.cwd(), 'Emails_agent', filename),
+    path.join(__dirname, 'Emails_agent', filename),
     path.join(__dirname, filename)
   ];
   for (const c of candidates) {
