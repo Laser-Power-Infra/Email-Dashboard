@@ -7,6 +7,10 @@ __pycache__/
 .env
 .env.*
 *.env
+*credentials*.json
+*credentials*
+*token*.json
+*token*.pickle
 credentials.json
 token.json
 token.pickle
