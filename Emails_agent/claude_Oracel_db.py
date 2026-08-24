@@ -1723,33 +1723,36 @@ def run_continuous():
     logger.info("="*70)
 
     init_db()
-    gmail_service, drive_service = get_google_services()
-
-    processed_thread_ids = load_processed_thread_ids()
-    logger.info(f"Loaded {len(processed_thread_ids)} existing processed threads from database.")
 
     batch_number = 1
     total_important = 0
+    iteration_count = 0
+    gmail_service, drive_service = None, None
 
     while True:
         try:
-            # Re-query DB for any newly added thread_ids
-            latest_db_ids = load_processed_thread_ids()
-            processed_thread_ids.update(latest_db_ids)
+            iteration_count += 1
+
+            # Refresh Google Services every 20 iterations (5 mins) to prevent stale HTTP sockets
+            if not gmail_service or iteration_count % 20 == 1:
+                gmail_service, drive_service = get_google_services()
+
+            # Always reload processed thread IDs from MySQL DB to stay 100% synchronized
+            processed_thread_ids = load_processed_thread_ids()
 
             setup_conn = get_db_connection()
             email_map = load_all_email_mapping(setup_conn)
             setup_conn.close()
 
-            # Search Gmail API dynamically for threads matching search query
-            current_query = get_search_query(LOOKBACK_DAYS, include_before=False)
+            # Use 7-day lookback for continuous listener without before restriction to guarantee no new email is missed
+            current_query = get_search_query(lookback_days=7, include_before=False)
             all_threads = search_threads(gmail_service, current_query)
             
-            # Filter ONLY threads that are not yet processed in DB
+            # Filter ONLY threads that are not yet stored in MySQL DB
             unprocessed_threads = [t for t in all_threads if t["id"] not in processed_thread_ids]
 
             if not unprocessed_threads:
-                logger.info(f"All {len(all_threads)} threads up-to-date. Listening for new incoming emails...")
+                logger.info(f"All {len(all_threads)} threads up-to-date. Listening for new incoming emails (check #{iteration_count})...")
                 time.sleep(15)
                 continue
 
@@ -1763,10 +1766,6 @@ def run_continuous():
             total_important += result.get('batch_important', 0)
             logger.info(f"Cumulative important: {total_important}")
 
-            # Mark all processed threads in set
-            for t in unprocessed_threads:
-                processed_thread_ids.add(t["id"])
-
             batch_number += 1
             logger.info("Checking for new incoming emails in 15s...")
             time.sleep(15)
@@ -1776,6 +1775,7 @@ def run_continuous():
             break
         except Exception as e:
             logger.error(f"Batch error: {e}", exc_info=True)
+            gmail_service = None # Force fresh session reconnect on error
             logger.info("Waiting 30s before retry...")
             time.sleep(30)
 
