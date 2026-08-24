@@ -127,14 +127,16 @@ MAX_THREADS_PER_RUN  = 500
 BATCH_SIZE           = 500
 LOOKBACK_DAYS        = 1
 
-_SEARCH_BASE = (
-    "-in:trash "
-    "-from:corporatenetbanking.automailer@hdfcbank.bank.in"
-)
-_SEARCH_UNTIL = datetime.now().strftime("%Y/%m/%d")
-_SEARCH_SINCE = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y/%m/%d")
+def get_search_query(lookback_days=LOOKBACK_DAYS, include_before=False):
+    base = "-in:trash -from:corporatenetbanking.automailer@hdfcbank.bank.in"
+    since_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y/%m/%d")
+    if include_before:
+        until_date = (datetime.now() + timedelta(days=1)).strftime("%Y/%m/%d")
+        return f"{base} after:{since_date} before:{until_date}"
+    else:
+        return f"{base} after:{since_date}"
 
-SEARCH_QUERY = f"{_SEARCH_BASE} after:{_SEARCH_SINCE} before:{_SEARCH_UNTIL}"
+SEARCH_QUERY = get_search_query(LOOKBACK_DAYS, include_before=False)
 
 # -----------------------------------------------------------------------
 # LOGGING
@@ -1739,8 +1741,9 @@ def run_continuous():
             email_map = load_all_email_mapping(setup_conn)
             setup_conn.close()
 
-            # Search Gmail API for threads matching search query
-            all_threads = search_threads(gmail_service, SEARCH_QUERY)
+            # Search Gmail API dynamically for threads matching search query
+            current_query = get_search_query(LOOKBACK_DAYS, include_before=False)
+            all_threads = search_threads(gmail_service, current_query)
             
             # Filter ONLY threads that are not yet processed in DB
             unprocessed_threads = [t for t in all_threads if t["id"] not in processed_thread_ids]
