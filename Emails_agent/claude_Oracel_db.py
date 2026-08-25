@@ -1223,35 +1223,53 @@ _INTERNAL_CATEGORY = 'internal'
 def resolve_company_category(
     email_map: Dict[str, Tuple[str, str, str]],
     to_emails: Set[str],
+    cc_emails: Set[str] = None,
     sender_emails: Iterable[str] = (),
 ) -> Tuple[str, str, str]:
     """Assign a SINGLE company + category + sub_category.
 
-    Priority:
-      1. Any To recipient whose mapping has CATEGORY='INTERNAL' (internal wins).
-      2. Otherwise the first mapped To recipient (any category).
-      3. Otherwise, sender fallback: an INTERNAL sender, else the first mapped
-         sender (any category).
-      4. Otherwise Outsider.
+    Flow:
+      1. Combine all recipient members in To + CC.
+      2. If ALL recipient members in (To + CC) are INTERNAL, mark category as INTERNAL.
+      3. If any recipient is external, check if any recipient matches a mapped external company.
+      4. Otherwise, fall back to checking Sender (From).
+      5. Otherwise, Outsider.
     """
-    def _pick_internal_first(emails: Iterable[str]):
-        external = None
-        for email in sorted(emails):
-            mapped = email_map.get(email.lower())
-            if not mapped:
-                continue
-            if mapped[1] and mapped[1].strip().lower() == _INTERNAL_CATEGORY:
-                return mapped
-            if external is None:
-                external = mapped
-        return external
+    cc_set = set(cc_emails) if cc_emails else set()
+    all_recipients = set(to_emails) | cc_set
 
-    hit = _pick_internal_first(to_emails)
-    if not hit:
-        hit = _pick_internal_first(sender_emails)
-    if hit:
-        return hit
-    return "Outsider", "Outsider", "Outsider"
+    def _is_internal_email(email_str: str) -> bool:
+        em = email_str.lower().strip()
+        mapped = email_map.get(em)
+        if mapped and mapped[1] and mapped[1].strip().lower() == _INTERNAL_CATEGORY:
+            return True
+        if em.endswith('@laserpowerinfra.com') or em.endswith('@gmdalui.co.in') or em.endswith('@uicwires.com'):
+            return True
+        return False
+
+    if all_recipients:
+        all_internal = all(_is_internal_email(e) for e in all_recipients)
+        if all_internal:
+            # ALL members in To + CC are internal -> mark as INTERNAL
+            for e in sorted(all_recipients):
+                mapped = email_map.get(e.lower().strip())
+                if mapped:
+                    return mapped
+            return ("LASER", "INTERNAL", "INTERNAL")
+
+        # NOT all recipients are internal -> check for mapped external recipient
+        for e in sorted(all_recipients):
+            mapped = email_map.get(e.lower().strip())
+            if mapped and mapped[1] and mapped[1].strip().lower() != _INTERNAL_CATEGORY:
+                return mapped
+
+    # Fall back to Sender (From)
+    for s in sorted(sender_emails):
+        mapped = email_map.get(s.lower().strip())
+        if mapped:
+            return mapped
+
+    return ("Outsider", "Outsider", "Outsider")
 
 _HEADER_LINE_RE = re.compile(r'^(to|cc)\s*:\s*(.*)$', re.IGNORECASE)
 _ANY_HEADER_RE  = re.compile(r'^[a-z-]{1,24}\s*:', re.IGNORECASE)
@@ -1381,10 +1399,10 @@ def reassign_company_category(db_conn, limit: Optional[int] = None, only_outside
     email_map = load_all_email_mapping(db_conn)
     cursor = db_conn.cursor(dictionary=True)
     if only_outsider:
-        sql = ("SELECT id, sender, to_details FROM threads "
+        sql = ("SELECT id, sender, to_details, cc_details FROM threads "
                "WHERE company = 'Outsider' ")
     else:
-        sql = ("SELECT id, sender, to_details FROM threads "
+        sql = ("SELECT id, sender, to_details, cc_details FROM threads "
                "WHERE to_details IS NOT NULL AND to_details != '' AND to_details != '[None]' ")
     if limit:
         sql += f"LIMIT {int(limit)}"
@@ -1395,10 +1413,11 @@ def reassign_company_category(db_conn, limit: Optional[int] = None, only_outside
 
     updated = 0
     for idx, row in enumerate(rows, 1):
-        to_emails = extract_bare_emails(row["to_details"])
+        to_emails = extract_bare_emails(row.get("to_details") or "")
+        cc_emails = extract_bare_emails(row.get("cc_details") or "")
         sender_emails = _EMAIL_RE.findall(row["sender"] or "")
         company, category, sub_category = resolve_company_category(
-            email_map, to_emails, sender_emails
+            email_map, to_emails, cc_emails, sender_emails
         )
         up = db_conn.cursor()
         up.execute(
@@ -1555,9 +1574,9 @@ def process_gmail_batch(
                 subject, body_content, from_field, all_attachment_names
             )
 
-            # Company lookup: To recipients first, then sender fallback, one company per mail
+            # Company lookup: Check To + CC (all internal = INTERNAL), mapped external, or sender fallback
             company, category, sub_category = resolve_company_category(
-                email_map, to_emails, _EMAIL_RE.findall(from_field or "")
+                email_map, to_emails, cc_emails, _EMAIL_RE.findall(from_field or "")
             )
 
             if is_important:
