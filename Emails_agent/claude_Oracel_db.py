@@ -1525,7 +1525,7 @@ def process_gmail_batch(
             subject    = headers.get("subject", "")
 
             from_field_lower = (from_field or "").lower()
-            if "automation@app.smartsheet.com" in from_field_lower or "tendertiger.com" in from_field_lower:
+            if "automation@app.smartsheet.com" in from_field_lower:
                 logger.info(f"  [Skipped Blacklisted Sender] {from_field} - Subject: {subject[:60]}")
                 continue
 
