@@ -363,8 +363,9 @@ def get_google_services():
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-            except Exception:
-                logger.warning("Token refresh failed. Re-authenticating...")
+                logger.info("Google OAuth token successfully refreshed.")
+            except Exception as err:
+                logger.warning(f"Token refresh failed ({err}). Re-authenticating...")
                 safe_remove_path(token_file)
                 creds = None
         if not creds:
@@ -372,9 +373,20 @@ def get_google_services():
                 raise FileNotFoundError(f"{creds_file} is missing or not a valid file.")
             flow  = InstalledAppFlow.from_client_secrets_file(creds_file, SCOPES)
             creds = flow.run_local_server(port=0)
-        with open(token_file, "w") as token:
-            token.write(creds.to_json())
-        logger.info("New token saved.")
+        
+        # Save refreshed token safely; handle read-only Docker mounts (root_config/token.json)
+        try:
+            with open(token_file, "w") as token:
+                token.write(creds.to_json())
+            logger.info(f"New token saved to {token_file}.")
+        except (OSError, PermissionError) as err:
+            writable_token_path = "token.json"
+            try:
+                with open(writable_token_path, "w") as token:
+                    token.write(creds.to_json())
+                logger.info(f"Token saved to writable fallback path: {writable_token_path}")
+            except Exception as w_err:
+                logger.warning(f"Could not write refreshed token to disk ({w_err}). Active in memory.")
 
     gmail_service = build("gmail", "v1", credentials=creds)
     drive_service = build("drive", "v3", credentials=creds)
