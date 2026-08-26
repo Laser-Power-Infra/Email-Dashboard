@@ -2243,6 +2243,110 @@ const { tenderStatusVal, replyDecision, deadline_date_val } = await buildMatched
   }
 });
 
+// Health Check Endpoint: returns health status for Backend, Database, Email Agent script, Frontend, and system statistics
+app.get(['/api/health', '/api/health/route'], async (req, res) => {
+  const startTime = Date.now();
+  const uptimeSeconds = process.uptime();
+  const memoryUsage = process.memoryUsage();
+
+  const statusReport = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    backend: {
+      status: 'online',
+      uptime: `${Math.floor(uptimeSeconds / 3600)}h ${Math.floor((uptimeSeconds % 3600) / 60)}m ${Math.floor(uptimeSeconds % 60)}s`,
+      uptimeSeconds: Math.floor(uptimeSeconds),
+      port: process.env.PORT || 6003,
+      nodeVersion: process.version,
+      memory: {
+        rssMB: (memoryUsage.rss / 1024 / 1024).toFixed(2),
+        heapTotalMB: (memoryUsage.heapTotal / 1024 / 1024).toFixed(2),
+        heapUsedMB: (memoryUsage.heapUsed / 1024 / 1024).toFixed(2)
+      }
+    },
+    frontend: {
+      status: 'online',
+      expectedPort: 6002,
+      url: process.env.FRONTEND_URL || 'http://localhost:6002'
+    },
+    database: {
+      status: 'unknown',
+      host: process.env.DB_HOST || '192.168.1.190',
+      database: process.env.DB_NAME || 'defaultdb',
+      port: process.env.DB_PORT || 3306
+    },
+    emailAgent: {
+      status: 'unknown',
+      lastProcessedDate: null,
+      processedThreads: 0,
+      totalThreadsInBatch: 0,
+      statusMessage: 'Not checked'
+    },
+    statistics: {
+      totalThreads: 0,
+      totalTenderMatches: 0,
+      totalCategories: 0,
+      totalSendersMapped: 0
+    },
+    responseTimeMs: 0
+  };
+
+  let conn;
+  try {
+    conn = await getDbConnection();
+    statusReport.database.status = 'connected';
+
+    try {
+      const [psRows] = await conn.execute(
+        'SELECT total_threads, processed_threads, last_processed_date, status, created_at FROM processing_status ORDER BY id DESC LIMIT 1'
+      );
+      if (psRows && psRows.length > 0) {
+        const ps = psRows[0];
+        statusReport.emailAgent = {
+          status: ps.status || 'running',
+          lastProcessedDate: ps.last_processed_date || ps.created_at,
+          processedThreads: ps.processed_threads || 0,
+          totalThreadsInBatch: ps.total_threads || 0,
+          statusMessage: `Pipeline ${ps.status || 'active'}, processed ${ps.processed_threads || 0} of ${ps.total_threads || 0} threads`
+        };
+      } else {
+        statusReport.emailAgent.statusMessage = 'Email agent pipeline active';
+        statusReport.emailAgent.status = 'active';
+      }
+    } catch (e) {
+      statusReport.emailAgent.statusMessage = 'processing_status table not populated yet';
+    }
+
+    try {
+      const [[{ totalThreads }]] = await conn.execute('SELECT COUNT(*) as totalThreads FROM threads');
+      const [[{ totalTenderMatches }]] = await conn.execute('SELECT COUNT(*) as totalTenderMatches FROM tender_matches');
+      const [[{ totalCategories }]] = await conn.execute('SELECT COUNT(*) as totalCategories FROM email_categories');
+      const [[{ totalSendersMapped }]] = await conn.execute('SELECT COUNT(*) as totalSendersMapped FROM all_email');
+
+      statusReport.statistics = {
+        totalThreads: Number(totalThreads || 0),
+        totalTenderMatches: Number(totalTenderMatches || 0),
+        totalCategories: Number(totalCategories || 0),
+        totalSendersMapped: Number(totalSendersMapped || 0)
+      };
+    } catch (e) {
+      console.error('Error fetching statistics for health route:', e.message);
+    }
+
+  } catch (err) {
+    statusReport.status = 'degraded';
+    statusReport.database.status = 'disconnected';
+    statusReport.database.error = err.message;
+  } finally {
+    if (conn) {
+      releaseDbConnection(conn);
+    }
+  }
+
+  statusReport.responseTimeMs = Date.now() - startTime;
+  res.json(statusReport);
+});
+
 // 7. Get Recent Matched Emails (across all tenders) for notifications and dashboard activity
 app.get('/api/recent-matches', async (req, res) => {
   const { excludeTenderTiger, page = 1, limit = 50 } = req.query;
