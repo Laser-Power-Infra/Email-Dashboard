@@ -773,8 +773,20 @@ def setup_tesseract() -> bool:
 
     try:
         import pytesseract
+        import shutil
+
+        # Check system PATH (Linux Docker / Windows PATH)
+        tesseract_bin = shutil.which('tesseract') or shutil.which('tesseract.exe')
+        if tesseract_bin:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_bin
+            logger.info(f"Tesseract found in system PATH: {tesseract_bin}")
+            _TESSERACT_AVAILABLE = True
+            return True
+
         username = os.getenv('USERNAME', '')
         tesseract_paths = [
+            '/usr/bin/tesseract',
+            '/usr/local/bin/tesseract',
             r'C:\Program Files\Tesseract-OCR\tesseract.exe',
             r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
         ]
@@ -788,15 +800,17 @@ def setup_tesseract() -> bool:
                 logger.info(f"Tesseract found at: {path}")
                 _TESSERACT_AVAILABLE = True
                 return True
+
         try:
             subprocess.run(['tesseract', '--version'], capture_output=True, text=True, check=True)
             pytesseract.pytesseract.tesseract_cmd = 'tesseract'
-            logger.info("Tesseract found in system PATH")
+            logger.info("Tesseract binary execution verified.")
             _TESSERACT_AVAILABLE = True
             return True
         except (FileNotFoundError, subprocess.CalledProcessError):
             pass
-        logger.warning("Tesseract not found. Image OCR disabled.")
+
+        logger.warning("Tesseract binary not found. Image & PDF OCR disabled.")
         _TESSERACT_AVAILABLE = False
         return False
     except ImportError:
@@ -913,15 +927,14 @@ def extract_text_from_pdf(file_bytes: bytes, file_name: str) -> str:
                 return f"[Password Protected PDF: {file_name}]"
             logger.debug(f"PyPDF2 failed for {file_name}: {e}")
 
-    if not parts and len(file_bytes) > 100_000 and setup_tesseract():
+    if not parts and setup_tesseract():
         try:
             from pdf2image import convert_from_bytes
-            from pdf2image.pdf2image import pdfinfo_from_bytes
             import pytesseract
-            pdfinfo_from_bytes(file_bytes)
-            for image in convert_from_bytes(file_bytes, dpi=150):
+            images = convert_from_bytes(file_bytes, dpi=150)
+            for image in images:
                 text = pytesseract.image_to_string(image.convert('L'))
-                if text.strip():
+                if text and text.strip():
                     parts.append(text.strip())
         except Exception as e:
             if "poppler" in str(e).lower():

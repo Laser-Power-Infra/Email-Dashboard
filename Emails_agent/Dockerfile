@@ -6,6 +6,7 @@ WORKDIR /app
 # Install system dependencies for Tesseract OCR and PDF poppler tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
+    tesseract-ocr-eng \
     libtesseract-dev \
     poppler-utils \
     gcc \
