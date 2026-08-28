@@ -3993,14 +3993,14 @@ async function backfillThreadsCompanyAndCodeword(conn) {
     // Auto-insert newly detected company emails into all_email table
     if (autoRegisteredEmails.size > 0) {
       console.log(`[Auto-Register] Inserting ${autoRegisteredEmails.size} new domain email addresses into all_email DB...`);
-      for (const [emailAddr, comp] of autoRegisteredEmails.entries()) {
+      for (const [email, comp] of autoRegisteredEmails.entries()) {
         try {
           await conn.execute(
-            `INSERT IGNORE INTO all_email (EMAIL, COMPANY, CATEGORY, SUB_CATEGORY) VALUES (?, ?, 'General', 'Official')`,
-            [emailAddr, comp]
+            `INSERT IGNORE INTO all_email (NAME, COMPANY, CATEGORY, SUB_CATEGORY) VALUES (?, ?, 'General', 'Official')`,
+            [email, comp]
           );
-        } catch (e) {
-          console.error(`Auto-register error for ${emailAddr}:`, e.message);
+        } catch (autoErr) {
+          console.error(`Auto-register error for ${email}:`, autoErr.message);
         }
       }
     }
