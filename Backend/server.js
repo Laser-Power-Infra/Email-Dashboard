@@ -571,6 +571,22 @@ async function initializeDatabase() {
       )
     `);
 
+    // Create master_tender_tokens table if not exists
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS master_tender_tokens (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        docket_no VARCHAR(100) NOT NULL,
+        tender_no_raw TEXT NOT NULL,
+        token VARCHAR(255) NOT NULL,
+        token_clean VARCHAR(255) NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_token (token),
+        INDEX idx_token_clean (token_clean),
+        INDEX idx_docket (docket_no),
+        UNIQUE KEY unique_token_per_docket (docket_no, token)
+      )
+    `);
+
     // Add tender_status column if it doesn't exist
     try {
       await conn.query(`
@@ -1605,6 +1621,33 @@ app.get('/api/sync-info', async (req, res) => {
   });
 });
 
+// Helper to populate master_tender_tokens database table with clean tokens extracted from sheet tenders
+async function syncMasterTenderTokens(conn, allTenders) {
+  try {
+    console.log(`Syncing ${allTenders.length} sheet tenders into master_tender_tokens table...`);
+    let totalTokensSaved = 0;
+
+    for (const tender of allTenders) {
+      if (!tender.docketNo || !tender.tenderNoRaw) continue;
+      const tokens = extractTenderTokens(tender.tenderNoRaw);
+      tender.tokens = tokens;
+
+      for (const token of tokens) {
+        const cleanTok = normalizeText(token).replace(/[\s\-_/]/g, '');
+        await conn.execute(`
+          INSERT INTO master_tender_tokens (docket_no, tender_no_raw, token, token_clean)
+          VALUES (?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE tender_no_raw = VALUES(tender_no_raw), token_clean = VALUES(token_clean)
+        `, [tender.docketNo, tender.tenderNoRaw, token, cleanTok]);
+        totalTokensSaved++;
+      }
+    }
+    console.log(`Successfully synced ${totalTokensSaved} clean tender tokens into master_tender_tokens table.`);
+  } catch (err) {
+    console.error('Error syncing master_tender_tokens table:', err.message);
+  }
+}
+
 // Global state to prevent concurrent sync executions
 let isSyncing = false;
 
@@ -1639,6 +1682,15 @@ async function runSync(forceFullSyncRequested = false) {
     const tenders = parseSheetRows(rawRows);
     const participatedTenders = tenders.filter(t => t.isParticipated);
     const allTenders = tenders.filter(t => t.docketNo || t.tenderNoRaw);
+
+    // Save tokens into master_tender_tokens table
+    try {
+      const tokenConn = await getDbConnection();
+      await syncMasterTenderTokens(tokenConn, allTenders);
+      releaseDbConnection(tokenConn);
+    } catch (tokenErr) {
+      console.error('Failed to sync master_tender_tokens:', tokenErr.message);
+    }
 
     // Save GSheet tenders cache immediately so the UI can load them while matching is in progress!
     const syncPayload = {
@@ -2345,6 +2397,22 @@ app.get(['/api/health', '/api/health/route'], async (req, res) => {
 
   statusReport.responseTimeMs = Date.now() - startTime;
   res.json(statusReport);
+});
+
+// GET /api/master-tender-tokens: Returns clean extracted tender tokens stored in master_tender_tokens table
+app.get('/api/master-tender-tokens', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const [rows] = await conn.execute(
+      'SELECT id, docket_no, tender_no_raw, token, token_clean, DATE_FORMAT(created_at, "%Y-%m-%d %H:%i:%s") as created_at FROM master_tender_tokens ORDER BY id DESC LIMIT 1000'
+    );
+    res.json({ total: rows.length, tokens: rows });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch master tender tokens', details: err.message });
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
 });
 
 // 7. Get Recent Matched Emails (across all tenders) for notifications and dashboard activity
