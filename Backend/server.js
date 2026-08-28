@@ -571,19 +571,15 @@ async function initializeDatabase() {
       )
     `);
 
-    // Create master_tender_tokens table if not exists
+    // Create master_tender_tokens table if not exists (1 row per tender docket, storing JSON array of tokens)
     await conn.query(`
       CREATE TABLE IF NOT EXISTS master_tender_tokens (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        docket_no VARCHAR(100) NOT NULL,
+        docket_no VARCHAR(100) NOT NULL UNIQUE,
         tender_no_raw TEXT NOT NULL,
-        token VARCHAR(255) NOT NULL,
-        token_clean VARCHAR(255) NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_token (token),
-        INDEX idx_token_clean (token_clean),
-        INDEX idx_docket (docket_no),
-        UNIQUE KEY unique_token_per_docket (docket_no, token)
+        tokens JSON NOT NULL,
+        tokens_str TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -1621,28 +1617,31 @@ app.get('/api/sync-info', async (req, res) => {
   });
 });
 
-// Helper to populate master_tender_tokens database table with clean tokens extracted from sheet tenders
+// Helper to populate master_tender_tokens database table with clean JSON token arrays (1 row per tender docket)
 async function syncMasterTenderTokens(conn, allTenders) {
   try {
     console.log(`Syncing ${allTenders.length} sheet tenders into master_tender_tokens table...`);
-    let totalTokensSaved = 0;
+    let totalTendersSaved = 0;
 
     for (const tender of allTenders) {
       if (!tender.docketNo || !tender.tenderNoRaw) continue;
       const tokens = extractTenderTokens(tender.tenderNoRaw);
       tender.tokens = tokens;
 
-      for (const token of tokens) {
-        const cleanTok = normalizeText(token).replace(/[\s\-_/]/g, '');
-        await conn.execute(`
-          INSERT INTO master_tender_tokens (docket_no, tender_no_raw, token, token_clean)
-          VALUES (?, ?, ?, ?)
-          ON DUPLICATE KEY UPDATE tender_no_raw = VALUES(tender_no_raw), token_clean = VALUES(token_clean)
-        `, [tender.docketNo, tender.tenderNoRaw, token, cleanTok]);
-        totalTokensSaved++;
-      }
+      const tokensJson = JSON.stringify(tokens);
+      const tokensStr = tokens.join(', ');
+
+      await conn.execute(`
+        INSERT INTO master_tender_tokens (docket_no, tender_no_raw, tokens, tokens_str)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE 
+          tender_no_raw = VALUES(tender_no_raw), 
+          tokens = VALUES(tokens), 
+          tokens_str = VALUES(tokens_str)
+      `, [tender.docketNo, tender.tenderNoRaw, tokensJson, tokensStr]);
+      totalTendersSaved++;
     }
-    console.log(`Successfully synced ${totalTokensSaved} clean tender tokens into master_tender_tokens table.`);
+    console.log(`Successfully synced ${totalTendersSaved} unique tender rows into master_tender_tokens table.`);
   } catch (err) {
     console.error('Error syncing master_tender_tokens table:', err.message);
   }
@@ -2405,9 +2404,9 @@ app.get('/api/master-tender-tokens', async (req, res) => {
   try {
     conn = await getDbConnection();
     const [rows] = await conn.execute(
-      'SELECT id, docket_no, tender_no_raw, token, token_clean, DATE_FORMAT(created_at, "%Y-%m-%d %H:%i:%s") as created_at FROM master_tender_tokens ORDER BY id DESC LIMIT 1000'
+      'SELECT id, docket_no, tender_no_raw, tokens, tokens_str, DATE_FORMAT(created_at, "%Y-%m-%d %H:%i:%s") as created_at FROM master_tender_tokens ORDER BY id DESC LIMIT 1000'
     );
-    res.json({ total: rows.length, tokens: rows });
+    res.json({ total: rows.length, tenders: rows });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch master tender tokens', details: err.message });
   } finally {
