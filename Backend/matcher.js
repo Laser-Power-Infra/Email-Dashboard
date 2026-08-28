@@ -16,21 +16,33 @@ const TOKEN_BLACKLIST = new Set([
   'sub', 'submission', 'offer', 'enquiry', 'specification', 'specifications',
   'ltd', 'limited', 'pvt', 'private', 'corp', 'corporation', 'co', 'company',
   'amendment', 'corrigendum', 'clarification', 'notice', 'document', 'attachment',
-  'file', 'details', 'summary', 'status', 'general', 'internal', 'external'
+  'file', 'details', 'summary', 'status', 'general', 'internal', 'external',
+  'tr', 'ed', 'ce', 'call', 'calls', 'cc', 'nt', 'dom', 'g-cond', 'a00', 'lot', 'item',
+  'sr', 'sno', 'no', 'nos', 'ver', 'v1', 'v2', 'doc', 'docs', 'page', 'pages',
+  'part', 'parts', 'sec', 'section', 'sl', 'slno'
 ]);
 
 function isBlacklistedToken(token) {
+  if (!token) return true;
   const clean = token.toLowerCase().trim();
   if (TOKEN_BLACKLIST.has(clean)) return true;
 
   // Blacklist common cable specifications like 3Cx300, 3Cx300mm2, 4Cx150, 630sqmm etc.
   if (/\b\d+cx\d+(?:\.\d+)?(?:sqmm|mm2)?\b/i.test(clean)) return true;
   if (/\b\d+(?:sqmm|mm2)\b/i.test(clean)) return true;
-  
+
+  // Require at least one 4+ digit number block OR a valid 6+ character mixed alphanumeric code
+  const digits = clean.match(/\d+/g) || [];
+  const hasFourDigitNum = digits.some(d => d.length >= 4);
+  const hasMixedCode = /^(?=[a-z]*\d)(?=\d*[a-z])[a-z0-9]{6,20}$/i.test(clean);
+
+  if (!hasFourDigitNum && !hasMixedCode) return true;
+
   const parts = clean.split(/[\/\-_]/);
   if (parts.length > 0) {
     const firstSegment = parts[0].trim();
-    if (TOKEN_BLACKLIST.has(firstSegment)) return true;
+    const lastSegment = parts[parts.length - 1].trim();
+    if (TOKEN_BLACKLIST.has(firstSegment) || TOKEN_BLACKLIST.has(lastSegment)) return true;
   }
   
   return false;
@@ -277,6 +289,7 @@ const TENDER_KEYWORDS = [
  * space-separated reference patterns are self-identifying as tender IDs.
  */
 function tokenIsDistinctive(token) {
+  if (isBlacklistedToken(token)) return false;
   if (token.includes('/')) return true;
   const underscoreCount = (token.match(/_/g) || []).length;
   if (underscoreCount >= 2) return true;
