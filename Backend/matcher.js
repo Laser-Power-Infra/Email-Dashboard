@@ -31,12 +31,14 @@ function isBlacklistedToken(token) {
   if (/\b\d+cx\d+(?:\.\d+)?(?:sqmm|mm2)?\b/i.test(clean)) return true;
   if (/\b\d+(?:sqmm|mm2)\b/i.test(clean)) return true;
 
-  // Require at least one 4+ digit number block OR a valid 6+ character mixed alphanumeric code
   const digits = clean.match(/\d+/g) || [];
-  const hasFourDigitNum = digits.some(d => d.length >= 4);
+  const hasDigit = digits.length > 0;
+  const hasTwoPlusDigitNum = digits.some(d => d.length >= 2);
+  const hasHyphenOrSlash = /[\/\-_]/.test(clean);
+  const hasLetters = /[a-z]/i.test(clean);
   const hasMixedCode = /^(?=[a-z]*\d)(?=\d*[a-z])[a-z0-9]{6,20}$/i.test(clean);
 
-  if (!hasFourDigitNum && !hasMixedCode) return true;
+  if (!hasDigit) return true;
 
   const parts = clean.split(/[\/\-_]/);
   if (parts.length > 0) {
@@ -44,7 +46,14 @@ function isBlacklistedToken(token) {
     const lastSegment = parts[parts.length - 1].trim();
     if (TOKEN_BLACKLIST.has(firstSegment) || TOKEN_BLACKLIST.has(lastSegment)) return true;
   }
-  
+
+  // Valid utility/company tender code format: letters + digits + separators and length >= 5 (e.g. SPMPT-59/23-24, TPWODL/SA/O/SU/031, TPWODL/AB/O/SU/034)
+  if (hasLetters && hasTwoPlusDigitNum && hasHyphenOrSlash && clean.length >= 5) {
+    return false;
+  }
+
+  if (!hasTwoPlusDigitNum && !hasMixedCode) return true;
+
   return false;
 }
 
@@ -52,16 +61,17 @@ function extractTenderTokens(rawString) {
   if (!rawString) return [];
   
   const tokens = new Set();
+  const cleanPrefix = (str) => str.replace(/^(?:no|nos|tender|nit|ref|refno|notice)\.?[-\s:#]*/gi, '').trim();
   
   // 1. Slash-separated codes (allowing dots inside the segments)
   // e.g., GEM/2026/B/7429306, BESCOM/2026-27/IND0231, JP/B862-000-XT-MR-0220/80, 30/PR/NBPDCL/2026, 01/XEN/P-III/MM/QH-II/2136, EPMPT-04/26-27
   const slashPattern = /[A-Z0-9_.-]+(?:\s*\/\s*[A-Z0-9_.-]+)+/gi;
   let match;
   while ((match = slashPattern.exec(rawString)) !== null) {
-    let token = match[0].trim();
+    let token = cleanPrefix(match[0].trim());
     // Clean trailing/leading garbage
     token = token.replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/gi, '');
-    if (token.length > 5 && /[0-9]/.test(token)) {
+    if (token.length >= 5 && /[0-9]/.test(token)) {
       const segs = token.split('/');
       const allNumeric = segs.every(s => /^\d+$/.test(s.replace(/[\s-]/g, '')));
       if (!allNumeric && !isBlacklistedToken(token)) {
@@ -71,12 +81,12 @@ function extractTenderTokens(rawString) {
   }
 
   // 1b. Dash-separated codes (allowing dots inside the segments)
-  // e.g., EPMPT-04-26-27, TPNODL-OT-2026-27-2500001185
+  // e.g., EPMPT-04-26-27, TPNODL-OT-2026-27-2500001185, SPMPT-59/23-24
   const dashPattern = /[A-Z0-9_.]+(?:\s*-\s*[A-Z0-9_.]+){2,}/gi;
   while ((match = dashPattern.exec(rawString)) !== null) {
-    let token = match[0].trim();
+    let token = cleanPrefix(match[0].trim());
     token = token.replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/gi, '');
-    if (token.length > 5 && /[0-9]/.test(token) && !isBlacklistedToken(token)) {
+    if (token.length >= 5 && /[0-9]/.test(token) && !isBlacklistedToken(token)) {
       tokens.add(token);
     }
   }
