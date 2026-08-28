@@ -1447,10 +1447,12 @@ function parseSheetRows(rows) {
   };
   
   const idxSlNo = getIndex("SL No.");
-  const idxDocket = getIndex("Docket No");
+  let idxDocket = getIndex("Docket No");
+  if (idxDocket === -1) idxDocket = 0; // Fallback to Column A (Timestamp)
   const idxTenderFor = getIndex("Tender For");
   const idxType = getIndex("Type of Tender");
-  const idxTenderNo = getIndex("Tender No / NIT No with Date");
+  let idxTenderNo = getIndex("Tender No / NIT No with Date");
+  if (idxTenderNo === -1) idxTenderNo = 3; // Fallback to Column D (Tender No / NIT No with Date)
   const idxNameWork = getIndex("Name of Work / Item Description?");
   const idxClient = getIndex("Name of the Client?");
   const idxLastDate = getIndex("Last Date of Submission");
