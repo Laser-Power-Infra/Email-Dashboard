@@ -5,6 +5,16 @@ const fs = require('fs');
 const path = require('path');
 const mysql = require('mysql2/promise');
 const { google } = require('googleapis');
+
+// Configure global retry and timeout settings for Google APIs (prevents ETIMEDOUT token refresh hangs)
+google.options({
+  timeout: 30000,
+  retryConfig: {
+    retry: 3,
+    retryDelay: 1000,
+    httpMethodsToRetry: ['GET', 'POST', 'PUT', 'HEAD', 'OPTIONS', 'DELETE']
+  }
+});
 const { OpenAI } = require('openai');
 const dotenv = require('dotenv');
 const multer = require('multer');
