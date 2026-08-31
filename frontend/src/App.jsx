@@ -1394,26 +1394,56 @@ function App() {
 
   const parseGSheetDate = (dateStr) => {
     if (!dateStr) return null;
-    const clean = dateStr.trim();
+    const clean = String(dateStr).trim();
+    if (clean === 'N/A' || clean === '' || clean === '-') return null;
 
-    // Format: DD.MM.YY or DD.MM.YYYY
-    let m = clean.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
+    // Format 1: Slash format (DD/MM/YYYY or DD/MM/YY) e.g., "28/08/2026", "28/8/26 15:00"
+    let m = clean.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+.*)?$/);
     if (m) {
+      let day = Number(m[1]);
+      let month = Number(m[2]) - 1;
       let year = Number(m[3]);
       if (year < 100) year += 2000;
-      return new Date(year, Number(m[2]) - 1, Number(m[1]));
+      return new Date(year, month, day);
     }
 
-    // Format: YYYY-MM-DD
-    m = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    // Format 2: Dot format (DD.MM.YYYY or DD.MM.YY) e.g., "28.08.2026"
+    m = clean.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})(?:\s+.*)?$/);
+    if (m) {
+      let day = Number(m[1]);
+      let month = Number(m[2]) - 1;
+      let year = Number(m[3]);
+      if (year < 100) year += 2000;
+      return new Date(year, month, day);
+    }
+
+    // Format 3: Dash format (YYYY-MM-DD) e.g., "2026-08-28"
+    m = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+.*)?$/);
     if (m) {
       return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
     }
 
-    // Format: DD-MM-YYYY
-    m = clean.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+    // Format 4: Dash format (DD-MM-YYYY or DD-MM-YY) e.g., "28-08-2026", "28-08-26"
+    m = clean.match(/^(\d{1,2})-(\d{1,2})-(\d{2,4})(?:\s+.*)?$/);
     if (m) {
-      return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+      let day = Number(m[1]);
+      let month = Number(m[2]) - 1;
+      let year = Number(m[3]);
+      if (year < 100) year += 2000;
+      return new Date(year, month, day);
+    }
+
+    // Format 5: Named Month format (DD-MMM-YYYY or DD MMM YYYY) e.g., "28-Aug-2026", "05-Sep-2026"
+    const months = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+    m = clean.match(/^(\d{1,2})[-\s]+([a-z]{3,9})[-\s]+(\d{2,4})(?:\s+.*)?$/i);
+    if (m) {
+      let day = Number(m[1]);
+      let monthName = m[2].toLowerCase().substring(0, 3);
+      let year = Number(m[3]);
+      if (year < 100) year += 2000;
+      if (months[monthName] !== undefined) {
+        return new Date(year, months[monthName], day);
+      }
     }
 
     const d = new Date(clean);
@@ -1702,10 +1732,8 @@ function App() {
     });
 
     const parseLD = (str) => {
-      if (!str || str === 'N/A') return 0;
-      const p = str.split('/');
-      if (p.length === 3) return new Date(`${p[2]}-${p[1]}-${p[0]}`).getTime();
-      return new Date(str).getTime() || 0;
+      const dt = parseGSheetDate(str);
+      return dt ? dt.getTime() : 0;
     };
 
     const sortMap = { date: tenderDateSort, submission: submissionDateSort, deadline: deadlineSort };
