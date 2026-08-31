@@ -44,6 +44,9 @@ services:
       - ./token.json:/app/root_config/token.json:rw
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     networks:
       - match_net
 
@@ -62,6 +65,9 @@ services:
       - ./token.json:/app/root_config/token.json:rw
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     networks:
       - match_net
 
