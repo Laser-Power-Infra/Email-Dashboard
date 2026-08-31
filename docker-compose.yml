@@ -36,12 +36,17 @@ services:
       - GOOGLE_SPREADSHEET_ID=1GTwzxMgViohbCimXqfiBZBJsKbCSr7hCgbcHF_En1VE
       - GOOGLE_SHEET_GID=1274623128
       - SYNC_INTERVAL_MS=14400000
+      - OLLAMA_HOST=http://host.docker.internal:11434
     volumes:
       - ./Backend/data:/app/data
       - ./Backend/cache:/app/cache
       - ./:/app/root_config:ro
+      - ./token.json:/app/root_config/token.json:rw
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     networks:
       - match_net
 
@@ -52,11 +57,17 @@ services:
       dockerfile: Dockerfile
     container_name: match_emails_agent
     restart: always
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
     volumes:
       - ./Emails_agent:/app
       - ./:/app/root_config:ro
+      - ./token.json:/app/root_config/token.json:rw
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     networks:
       - match_net
 

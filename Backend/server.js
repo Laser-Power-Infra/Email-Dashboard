@@ -4,6 +4,10 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const mysql = require('mysql2/promise');
+const dns = require('dns');
+if (dns.setDefaultResultOrder) {
+  dns.setDefaultResultOrder('ipv4first');
+}
 const { google } = require('googleapis');
 
 // Configure global retry and timeout settings for Google APIs (prevents ETIMEDOUT token refresh hangs)
@@ -1725,8 +1729,20 @@ async function runSync(forceFullSyncRequested = false) {
     }
 
     // A. Fetch current sheet list
-    const rawRows = await fetchGoogleSheetTenders();
-    const tenders = parseSheetRows(rawRows);
+    let rawRows = [];
+    let tenders = [];
+    try {
+      rawRows = await fetchGoogleSheetTenders();
+      tenders = parseSheetRows(rawRows);
+    } catch (sheetErr) {
+      console.warn('[Google Auth/Network Warning] Google Sheets fetch failed:', sheetErr.message);
+      if (cache && cache.tenders && cache.tenders.length > 0) {
+        console.log(`[Fallback] Using ${cache.tenders.length} cached tenders from disk cache.`);
+        tenders = cache.tenders;
+      } else {
+        throw sheetErr;
+      }
+    }
     const participatedTenders = tenders.filter(t => t.isParticipated);
     const allTenders = tenders.filter(t => t.docketNo || t.tenderNoRaw);
 
