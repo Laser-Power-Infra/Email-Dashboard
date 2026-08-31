@@ -1008,11 +1008,11 @@ async function fetchEmailsFromDb(sinceDateOrId = null) {
   const queryParams = [];
   if (sinceDateOrId) {
     if (sinceDateOrId instanceof Date) {
-      query += ` AND ${colDate} >= ?`;
-      queryParams.push(sinceDateOrId);
+      query += ` AND (${colDate} >= ? OR (last_updated IS NOT NULL AND last_updated >= ?))`;
+      queryParams.push(sinceDateOrId, sinceDateOrId);
     } else {
-      query += ` AND ${colId} > ?`;
-      queryParams.push(Number(sinceDateOrId));
+      query += ` AND (${colId} > ? OR (last_updated IS NOT NULL AND last_updated >= (SELECT COALESCE(last_updated, date) FROM \`${table}\` WHERE ${colId} = ? LIMIT 1)))`;
+      queryParams.push(Number(sinceDateOrId), Number(sinceDateOrId));
     }
   }
 
@@ -1723,7 +1723,7 @@ async function runSync(forceFullSyncRequested = false) {
     }
     if (cache && cache.tenders) {
       cache.tenders.forEach(t => {
-        const key = `${t.docketNo}||${t.tenderNoRaw}`;
+        const key = `${t.docketNo}||${t.tenderNoRaw}||${t.isParticipated ? '1' : '0'}`;
         cachedTendersMap[key] = true;
       });
     }
@@ -1763,9 +1763,9 @@ async function runSync(forceFullSyncRequested = false) {
     };
     writeCache(CACHE_FILE, syncPayload);
 
-    // Identify if there are any new tenders added since the last sync
+    // Identify if there are any new tenders or newly participated tenders added since last sync
     const newTenders = allTenders.filter(t => {
-      const key = `${t.docketNo}||${t.tenderNoRaw}`;
+      const key = `${t.docketNo}||${t.tenderNoRaw}||${t.isParticipated ? '1' : '0'}`;
       return !cachedTendersMap[key];
     });
     const hasNewTenders = newTenders.length > 0;
