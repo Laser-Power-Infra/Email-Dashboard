@@ -34,238 +34,71 @@ import {
 } from 'lucide-react';
 
 function parseEmailThread(body) {
-  if (!body) return [];
+  if (!body || !body.trim()) return [];
 
-  // Step 1: Identify all boundaries in the text.
-  const boundaries = [];
-  
-  // A. "--- Message X From: Y ---"
-  const msgFromRegex = /--- Message\s+(\d+)\s+From:\s*(.*?)\s*---/gi;
+  // Step 1: Split thread primary by "--- Message X From: Y ---" markers
+  const msgFromRegex = /--- Message\s+\d+\s+From:\s*(.*?)\s*---/gi;
+  const matches = [];
   let m;
   while ((m = msgFromRegex.exec(body)) !== null) {
-    boundaries.push({
-      type: 'message_marker',
+    matches.push({
       index: m.index,
       length: m[0].length,
-      defaultSender: m[2]
+      sender: m[1]
     });
   }
 
-  // B. "---------- Forwarded message ---------"
-  const fwdHeaderRegex = /---------- Forwarded message ---------/gi;
-  while ((m = fwdHeaderRegex.exec(body)) !== null) {
-    boundaries.push({
-      type: 'forwarded_marker',
-      index: m.index,
-      length: m[0].length,
-      defaultSender: 'Forwarded Message'
-    });
-  }
+  if (matches.length > 0) {
+    const segments = [];
+    for (let i = 0; i < matches.length; i++) {
+      const current = matches[i];
+      const nextIndex = (i + 1 < matches.length) ? matches[i + 1].index : body.length;
+      let text = body.substring(current.index + current.length, nextIndex).trim();
 
-  // C. Inline or multiline From headers that start a new message block
-  const fromHeaderRegex = /(?:^|\r?\n)(?:\*?\s*From\s*\*?\s*:)\s*(.*?)(?=\s*\*?(?:Sent|Date|To|Subject)\*?:|\r?\n|$)/gi;
-  while ((m = fromHeaderRegex.exec(body)) !== null) {
-    const matchStr = m[0];
-    const newlineOffset = matchStr.match(/^\r?\n/) ? matchStr.match(/^\r?\n/)[0].length : 0;
-    
-    boundaries.push({
-      type: 'from_header',
-      index: m.index + newlineOffset,
-      length: matchStr.length - newlineOffset,
-      defaultSender: m[1]
-    });
-  }
+      // Clean trailing email header artifacts if any
+      text = text.replace(/---------- Forwarded message ---------/gi, '').trim();
 
-  // Sort boundaries by index
-  boundaries.sort((a, b) => a.index - b.index);
-
-  // Filter out overlapping boundaries
-  const cleanBoundaries = [];
-  let lastEnd = -1;
-  for (const b of boundaries) {
-    if (b.index >= lastEnd) {
-      cleanBoundaries.push(b);
-      lastEnd = b.index + b.length;
-    }
-  }
-
-  // Slice the body into segments
-  const segments = [];
-  
-  if (cleanBoundaries.length === 0) {
-    segments.push({
-      index: 0,
-      markerLength: 0,
-      text: body,
-      defaultSender: 'Main Message'
-    });
-  } else {
-    if (cleanBoundaries[0].index > 0) {
-      const firstText = body.substring(0, cleanBoundaries[0].index).trim();
-      if (firstText) {
+      if (text.length > 0) {
         segments.push({
-          index: 0,
-          markerLength: 0,
-          text: firstText,
-          defaultSender: 'Main Message'
+          defaultSender: current.sender,
+          text: text
         });
       }
     }
-
-    for (let i = 0; i < cleanBoundaries.length; i++) {
-      const current = cleanBoundaries[i];
-      const startIndex = current.index;
-      const endIndex = (i + 1 < cleanBoundaries.length) ? cleanBoundaries[i + 1].index : body.length;
-      const segmentText = body.substring(startIndex, endIndex).trim();
-      
-      segments.push({
-        index: startIndex,
-        markerLength: current.length,
-        text: segmentText,
-        defaultSender: current.defaultSender
-      });
-    }
+    if (segments.length > 0) return segments;
   }
 
-  // Step 2: Parse each segment to extract headers and body
-  return segments.map((seg, segIndex) => {
-    let text = seg.text;
-    
-    if (seg.markerLength > 0 && text.length >= seg.markerLength) {
-      const markerText = text.substring(0, seg.markerLength);
-      if (markerText.includes('---') || markerText.includes('Forwarded message')) {
-        text = text.substring(seg.markerLength).trim();
-      }
-    }
-
-    const lines = text.split(/\r?\n/);
-    const headerLines = [];
-    const bodyLines = [];
-    let inHeaderBlock = true;
-    let emptyLinesCount = 0;
-
-    const headerKeys = ['from', 'to', 'cc', 'sent', 'date', 'subject'];
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-
-      if (inHeaderBlock) {
-        if (trimmed === '') {
-          emptyLinesCount++;
-          if (headerLines.length > 0 && emptyLinesCount > 1) {
-            inHeaderBlock = false;
-          }
-          continue;
-        }
-
-        const lineLower = trimmed.toLowerCase();
-        const hasHeaderKey = headerKeys.some(key => {
-          const regex = new RegExp(`\\b\\*?${key}\\*?\\s*:`, 'i');
-          return regex.test(lineLower);
-        });
-
-        const isDisclaimer = lineLower.includes('caution:') || lineLower.includes('disclaimer') || lineLower.includes('warning:');
-
-        if (hasHeaderKey || isDisclaimer || (headerLines.length > 0 && trimmed.startsWith('*') && trimmed.endsWith('*'))) {
-          headerLines.push(line);
-          emptyLinesCount = 0;
-        } else {
-          inHeaderBlock = false;
-          bodyLines.push(line);
-        }
-      } else {
-        bodyLines.push(line);
-      }
-    }
-
-    const headerBlockText = headerLines.join(' ');
-    let extraBodyText = '';
-
-    // Parse the header block text
-    const headers = {
-      sender: seg.defaultSender || 'Unknown Sender',
-      date: '',
-      to: '',
-      cc: '',
-      subject: ''
-    };
-
-    if (headerBlockText) {
-      const foundHeaders = [];
-      const headerKeyRegex = /\b\*?(From|To|Cc|Sent|Date|Subject)\*?\s*:/gi;
-      let match;
-      while ((match = headerKeyRegex.exec(headerBlockText)) !== null) {
-        foundHeaders.push({
-          key: match[1].toLowerCase(),
-          index: match.index,
-          length: match[0].length
-        });
-      }
-
-      foundHeaders.sort((a, b) => a.index - b.index);
-
-      for (let k = 0; k < foundHeaders.length; k++) {
-        const currHeader = foundHeaders[k];
-        const valStart = currHeader.index + currHeader.length;
-        const valEnd = (k + 1 < foundHeaders.length) ? foundHeaders[k + 1].index : headerBlockText.length;
+  // Step 2: Split by "---------- Forwarded message ---------" if present
+  const fwdParts = body.split(/---------- Forwarded message ---------/gi);
+  if (fwdParts.length > 1) {
+    const segments = [];
+    fwdParts.forEach((part, idx) => {
+      const clean = part.trim();
+      if (clean.length > 0) {
+        // Extract sender from From: line if available
+        const senderMatch = clean.match(/(?:^|\r?\n)From:\s*(.*?)(?=\r?\n|$)/i);
+        const sender = senderMatch ? senderMatch[1].trim() : (idx === 0 ? 'Main Message' : 'Forwarded Message');
         
-        let value = headerBlockText.substring(valStart, valEnd).trim();
-
-        // If this is the last header, check if it contains a body starter
-        if (k === foundHeaders.length - 1) {
-          const bodyStarterRegex = /\b(Dear\s+\w+|Hello\s+\w+|Hi\s+\w+|Dear\s+Sir|Dear\s+Mr|Dear\s+M|Thanks\b|Regards\b|Please\b|We\b|CAUTION\b|Sl\.?\s*No\.?)/i;
-          const starterMatch = value.match(bodyStarterRegex);
-          if (starterMatch) {
-            const splitIndex = starterMatch.index;
-            extraBodyText = value.substring(splitIndex);
-            value = value.substring(0, splitIndex).trim();
-          }
-        }
-
-        value = value.replace(/^[*\s,<>:|]+|[*\s,<>:|]+$/g, '');
-
-        const keyMap = {
-          from: 'sender',
-          date: 'date',
-          sent: 'date',
-          to: 'to',
-          cc: 'cc',
-          subject: 'subject'
-        };
-
-        const mappedKey = keyMap[currHeader.key];
-        if (mappedKey) {
-          headers[mappedKey] = value;
+        // Strip header block lines (From:, Date:, Subject:, To:, Cc:) from top of body
+        let bodyText = clean;
+        bodyText = bodyText.replace(/^(?:From|Date|Subject|To|Cc):.*$/gim, '').trim();
+        
+        if (bodyText.length > 0) {
+          segments.push({
+            defaultSender: sender,
+            text: bodyText
+          });
         }
       }
-    }
+    });
+    if (segments.length > 0) return segments;
+  }
 
-    // Prepend any extra body text extracted from the last header value
-    if (extraBodyText) {
-      bodyLines.unshift(extraBodyText);
-    }
-
-    const bodyText = bodyLines.join('\n').trim();
-
-    let cleanBodyText = bodyText.split('\n').map(line => {
-      let clean = line;
-      if (clean.trim().startsWith('>')) {
-        clean = clean.trim().substring(1);
-        if (clean.startsWith(' ')) clean = clean.substring(1);
-      }
-      return clean;
-    }).join('\n').trim();
-
-    return {
-      sender: headers.sender || seg.defaultSender || 'Unknown Sender',
-      date: headers.date || '',
-      to: headers.to || '',
-      cc: headers.cc || '',
-      subject: headers.subject || '',
-      body: cleanBodyText
-    };
-  });
+  // Fallback: Return single main message
+  return [{
+    defaultSender: 'Main Message',
+    text: body.trim()
+  }];
 }
 
 function extractCssFromText(text) {
@@ -752,6 +585,8 @@ function App() {
   const [remapResult, setRemapResult] = useState(null);
 
   // Chat & Feedback state
+  const [showFullCc, setShowFullCc] = useState(false);
+  const [copySuccess, setCopySuccess] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
@@ -802,17 +637,31 @@ function App() {
   };
 
   const sendChat = async (matchId, message, sender = 'user') => {
-    if (!matchId || !message.trim()) return;
+    const targetId = matchId || (selectedEmail && (selectedEmail.match_id || selectedEmail.id));
+    if (!targetId || !message.trim()) return;
+    
+    const currentMsg = message.trim();
+    setChatInput('');
     setChatLoading(true);
+
+    // Optimistically show user message immediately
+    const tempUserMsg = {
+      id: Date.now(),
+      sender: 'user',
+      message: currentMsg,
+      created_at: new Date().toISOString()
+    };
+    setChatMessages(prev => [...prev, tempUserMsg]);
+
     try {
-      const res = await fetch(`/api/matches/${matchId}/chat`, {
+      const res = await fetch(`/api/matches/${targetId}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sender, message: message.trim() })
+        body: JSON.stringify({ sender, message: currentMsg })
       });
       if (res.ok) {
-        setChatInput('');
-        await fetchChat(matchId);
+        const data = await res.json();
+        setChatMessages(data);
       }
     } catch (err) {
       console.error('Error sending chat:', err);
@@ -889,8 +738,9 @@ function App() {
       }
     })();
 
-    if (email.match_id) {
-      await fetchChat(email.match_id);
+    const chatTargetId = email.match_id || email.id;
+    if (chatTargetId) {
+      await fetchChat(chatTargetId);
     }
   };
 
@@ -4528,71 +4378,173 @@ function App() {
 
       {/* EMAIL DETAIL VIEW MODAL */}
       {selectedEmail && (
-        <div className="modal-backdrop" onClick={() => setSelectedEmail(null)} style={{ zIndex: 1100 }}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '1050px', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
-            <div className="modal-header" style={{ padding: '1rem 1.5rem', flexShrink: 0 }}>
-              <div>
-                <h2 style={{ fontSize: '1.15rem', margin: 0 }}>
-                  {selectedEmail.match_id ? 'Match Chat & Email Details' : 'Email Details'}
-                </h2>
-                <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '0.25rem', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                  <div>
-                    Sender: <strong style={{ color: 'var(--text-main)' }}>{selectedEmail.sender}</strong>
-                    {selectedEmail.to_details && (
-                      <span style={{ marginLeft: '1rem' }}>
-                        Receiver: <strong style={{ color: 'var(--text-main)' }}>{selectedEmail.to_details}</strong>
+        <div 
+          className="email-modal-overlay-root" 
+          onClick={() => setSelectedEmail(null)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            width: '100vw',
+            height: '100vh',
+            backgroundColor: 'rgba(15, 23, 42, 0.65)',
+            backdropFilter: 'blur(6px)',
+            WebkitBackdropFilter: 'blur(6px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 99999,
+            padding: '1.5rem',
+            boxSizing: 'border-box'
+          }}
+        >
+          <div 
+            className="email-modal-card-light" 
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'relative',
+              width: '980px',
+              maxWidth: '92vw',
+              height: '80vh',
+              maxHeight: '80vh',
+              backgroundColor: '#ffffff',
+              border: '1px solid #cbd5e1',
+              borderRadius: '14px',
+              boxShadow: '0 20px 50px rgba(0, 0, 0, 0.25)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              margin: 'auto',
+              color: '#0f172a'
+            }}
+          >
+            
+            {/* FIXED LIGHT HEADER */}
+            <div className="email-modal-header-light" style={{ padding: '1.1rem 1.5rem', borderBottom: '1px solid #e2e8f0', backgroundColor: '#f8fafc', flexShrink: 0 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '0.45rem' }}>
+                    <h2 style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0, color: '#0f172a', lineHeight: '1.35', wordBreak: 'break-word' }}>
+                      {selectedEmail.subject || '(No Subject)'}
+                    </h2>
+                    {(selectedEmail.matchedToken || selectedEmail.matched_token) && (
+                      <span style={{ fontSize: '0.72rem', padding: '0.2rem 0.55rem', borderRadius: '6px', backgroundColor: '#ecfdf5', color: '#065f46', border: '1px solid #a7f3d0', fontWeight: 600 }}>
+                        Token: {selectedEmail.matchedToken || selectedEmail.matched_token}
                       </span>
                     )}
-                    {selectedEmail.cc_details && (
-                      <span style={{ marginLeft: '1rem' }}>
-                        CC: <strong style={{ color: 'var(--text-main)' }}>{selectedEmail.cc_details}</strong>
+                    {selectedEmail.confidence && (
+                      <span style={{ fontSize: '0.72rem', padding: '0.2rem 0.55rem', borderRadius: '6px', backgroundColor: selectedEmail.confidence === 'HIGH' ? '#eff6ff' : '#fffbeb', color: selectedEmail.confidence === 'HIGH' ? '#1d4ed8' : '#b45309', border: selectedEmail.confidence === 'HIGH' ? '1px solid #bfdbfe' : '1px solid #fde68a', fontWeight: 600 }}>
+                        {selectedEmail.confidence} Confidence
                       </span>
                     )}
-                    <span style={{ marginLeft: '1rem' }}>
-                      Date: {formatDateTime(selectedEmail.date_received)}
-                    </span>
                   </div>
-                  {selectedEmail.match_id && (
-                    <div>
-                      Match ID: #{selectedEmail.match_id} | 
-                      Token: <strong>{selectedEmail.matchedToken}</strong> |
-                      Confidence: <span className={`badge ${selectedEmail.confidence === 'HIGH' ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '0.7rem' }}>{selectedEmail.confidence}</span>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap', fontSize: '0.82rem', color: '#64748b' }}>
+                    {/* Sender Pill */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', backgroundColor: '#ffffff', padding: '0.25rem 0.65rem', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+                      <div style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#ffffff', fontWeight: 700, fontSize: '0.7rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {(selectedEmail.sender || 'Sender').replace(/<.*?>/g, '').trim().slice(0, 2).toUpperCase()}
+                      </div>
+                      <span>From: <strong style={{ color: '#0f172a' }}>{selectedEmail.sender}</strong></span>
                     </div>
-                  )}
+
+                    {/* Date Pill */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', backgroundColor: '#ffffff', padding: '0.25rem 0.65rem', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
+                      <Calendar size={13} color="#6366f1" />
+                      <span>{formatDateTime(selectedEmail.date_received || selectedEmail.date)}</span>
+                    </div>
+
+                    {/* To Details */}
+                    {selectedEmail.to_details && (
+                      <div style={{ color: '#475569' }}>To: <span style={{ color: '#0f172a', fontWeight: 500 }}>{selectedEmail.to_details}</span></div>
+                    )}
+
+                    {/* CC Details with expand pill */}
+                    {selectedEmail.cc_details && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        <span>CC:</span>
+                        {(() => {
+                          const ccs = selectedEmail.cc_details.split(',').map(c => c.trim()).filter(Boolean);
+                          if (ccs.length <= 2 || showFullCc) {
+                            return (
+                              <span style={{ color: '#0f172a', wordBreak: 'break-all' }}>
+                                {ccs.join(', ')}
+                                {ccs.length > 2 && (
+                                  <button style={{ marginLeft: '0.4rem', padding: '0.1rem 0.4rem', fontSize: '0.68rem', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: '#ffffff', color: '#475569', cursor: 'pointer' }} onClick={() => setShowFullCc(false)}>Hide</button>
+                                )}
+                              </span>
+                            );
+                          }
+                          return (
+                            <span>
+                              <span style={{ color: '#0f172a' }}>{ccs.slice(0, 2).join(', ')}</span>
+                              <button style={{ marginLeft: '0.35rem', padding: '0.1rem 0.45rem', fontSize: '0.68rem', borderRadius: '10px', border: '1px solid #cbd5e1', backgroundColor: '#ffffff', color: '#6366f1', fontWeight: 600, cursor: 'pointer' }} onClick={() => setShowFullCc(true)}>
+                                + {ccs.length - 2} more
+                              </button>
+                            </span>
+                          );
+                        })()}
+                      </div>
+                    )}
+                  </div>
                 </div>
+
+                {/* Close Button */}
+                <button 
+                  onClick={() => setSelectedEmail(null)} 
+                  title="Close Email Viewer"
+                  style={{ 
+                    background: '#ffffff', 
+                    border: '1px solid #cbd5e1', 
+                    borderRadius: '50%', 
+                    width: '34px', 
+                    height: '34px', 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'center', 
+                    color: '#475569', 
+                    fontSize: '1.1rem',
+                    cursor: 'pointer', 
+                    flexShrink: 0,
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  ✕
+                </button>
               </div>
-              <button className="modal-close" onClick={() => setSelectedEmail(null)}>✕</button>
             </div>
 
-            <div className="modal-body" style={{ padding: '0', display: 'flex', flex: 1, overflow: 'hidden' }}>
-              {/* LEFT COLUMN: Email Details */}
-              <div style={{ flex: '1', padding: '1.25rem', overflowY: 'auto', borderRight: '1px solid var(--border-color)' }}>
-                <div style={{ fontWeight: 600, fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>
-                  Subject: {selectedEmail.subject}
-                </div>
-
-                {/* AI Summary Box */}
-                <div className="email-summary" style={{ margin: '0.5rem 0 1rem 0' }}>
-                  <div className="email-summary-header">
-                    <span>✨ AI Email Summary</span>
+            {/* 2-COLUMN MAIN BODY (SCROLLS INDEPENDENTLY) */}
+            <div className="email-modal-body-row" style={{ display: 'flex', flexDirection: 'row', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+              
+              {/* LEFT COLUMN: EMAIL THREAD & OCR */}
+              <div className="email-modal-left-pane-light" style={{ flex: '1 1 62%', minWidth: 0, padding: '1.1rem 1.4rem', overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', gap: '0.9rem', borderRight: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
+                
+                {/* ✨ AI Summary Card */}
+                <div style={{ padding: '0.9rem 1.15rem', backgroundColor: '#faf5ff', borderRadius: '10px', border: '1px solid #e9d5ff', boxShadow: '0 1px 3px rgba(124, 58, 237, 0.05)' }}>
+                  <div style={{ marginBottom: '0.45rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: '#7c3aed', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      ✨ AI Executive Summary
+                    </span>
                     {selectedEmail.summary && (
                       <button
-                        className="btn btn-secondary"
-                        style={{ padding: '0.15rem 0.4rem', fontSize: '0.7rem', height: 'auto', borderRadius: '4px' }}
+                        style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', borderRadius: '6px', border: '1px solid #d8b4fe', backgroundColor: '#ffffff', color: '#7c3aed', cursor: 'pointer', fontWeight: 500 }}
                         onClick={() => handleManualSummarize(selectedEmail.id)}
                         disabled={summarizing}
                       >
-                        {summarizing ? 'Regenerating...' : 'Regenerate'}
+                        {summarizing ? 'Regenerating...' : '🔄 Regenerate'}
                       </button>
                     )}
                   </div>
                   {selectedEmail.summary ? (
-                    <p style={{ whiteSpace: 'pre-wrap', lineHeight: '1.5', margin: 0, fontSize: '0.85rem' }}>{selectedEmail.summary}</p>
+                    <p style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', margin: 0, fontSize: '0.88rem', color: '#334155' }}>{selectedEmail.summary}</p>
                   ) : (
-                    <div style={{ padding: '0.5rem 0' }}>
+                    <div>
                       <button
-                        className="btn btn-primary"
-                        style={{ fontSize: '0.85rem', padding: '0.45rem 0.9rem' }}
+                        style={{ fontSize: '0.82rem', padding: '0.4rem 0.85rem', borderRadius: '6px', backgroundColor: '#7c3aed', color: '#ffffff', border: 'none', cursor: 'pointer', fontWeight: 600, boxShadow: '0 2px 4px rgba(124, 58, 237, 0.2)' }}
                         onClick={() => handleManualSummarize(selectedEmail.id)}
                         disabled={summarizing}
                       >
@@ -4603,196 +4555,256 @@ function App() {
                 </div>
 
                 {/* Custom Labels Section */}
-                <div style={{ marginBottom: '1rem', padding: '0.75rem', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
-                  <h4 style={{ fontSize: '0.85rem', marginBottom: '0.5rem', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <FileText size={13} />
+                <div style={{ padding: '0.8rem 1rem', backgroundColor: '#ffffff', borderRadius: '10px', border: '1px solid #e2e8f0', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#64748b', marginBottom: '0.45rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <FileText size={13} color="#6366f1" />
                     Custom Labels
-                  </h4>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.5rem' }}>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginBottom: '0.45rem' }}>
                     {selectedEmail.user_labels ? (
                       selectedEmail.user_labels.split(',').map(lbl => {
                         const label = lbl.trim();
                         if (!label) return null;
                         return (
-                          <span key={label} className="badge badge-success" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.2rem', padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}>
+                          <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', padding: '0.2rem 0.55rem', fontSize: '0.75rem', borderRadius: '6px', backgroundColor: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0', fontWeight: 500 }}>
                             {label}
-                            <span style={{ cursor: 'pointer', fontWeight: 'bold' }} onClick={() => handleRemoveLabel(selectedEmail, label)}>✕</span>
+                            <span style={{ cursor: 'pointer', fontWeight: 'bold', marginLeft: '0.2rem' }} onClick={() => handleRemoveLabel(selectedEmail, label)}>✕</span>
                           </span>
                         );
                       })
                     ) : (
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontStyle: 'italic' }}>No custom labels assigned.</span>
+                      <span style={{ color: '#94a3b8', fontSize: '0.8rem', fontStyle: 'italic' }}>No custom labels assigned.</span>
                     )}
                   </div>
-                  <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center' }}>
                     {availableLabels.slice(0, 5).map(lbl => {
                       const existing = selectedEmail.user_labels ? selectedEmail.user_labels.split(',').map(x => x.trim().toLowerCase()) : [];
                       const isAssigned = existing.includes(lbl.toLowerCase());
                       return (
-                        <button key={lbl} className={`btn ${isAssigned ? 'btn-primary' : 'btn-secondary'}`}
-                          style={{ padding: '0.2rem 0.5rem', borderRadius: '12px', fontSize: '0.7rem', cursor: 'pointer' }}
+                        <button key={lbl} 
+                          style={{ padding: '0.2rem 0.5rem', borderRadius: '12px', fontSize: '0.72rem', cursor: 'pointer', backgroundColor: isAssigned ? '#6366f1' : '#f1f5f9', color: isAssigned ? '#ffffff' : '#475569', border: '1px solid ' + (isAssigned ? '#6366f1' : '#cbd5e1'), fontWeight: 500 }}
                           onClick={() => isAssigned ? handleRemoveLabel(selectedEmail, lbl) : handleAddLabel(selectedEmail, lbl)}>
                           {isAssigned ? '✓' : '+'} {lbl}
                         </button>
                       );
                     })}
-                    <input type="text" placeholder="New label..." className="search-input"
-                      style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem', width: '100px' }}
+                    <input type="text" placeholder="Add label..." 
+                      style={{ padding: '0.22rem 0.55rem', fontSize: '0.75rem', width: '115px', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: '#ffffff', color: '#0f172a', outline: 'none' }}
                       value={labelInput} onChange={(e) => setLabelInput(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') { handleAddLabel(selectedEmail, labelInput); setLabelInput(''); } }} />
                   </div>
                 </div>
 
-                {/* Email Body */}
-                <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.4rem' }}>Original Message</div>
-                  <div style={{ maxHeight: '150px', overflowY: 'auto', fontSize: '0.8rem', backgroundColor: 'rgba(255, 255, 255, 0.04)', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--border-color)', whiteSpace: 'pre-wrap', fontFamily: 'monospace', color: 'var(--text-main)' }}>
-                    {selectedEmail.body}
+                {/* PARSED EMAIL THREAD */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                  <div style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <Mail size={14} color="#6366f1" />
+                    Email Thread Messages ({parseEmailThread(selectedEmail.body).length || 1})
+                  </div>
+
+                  {(() => {
+                    const parsed = parseEmailThread(selectedEmail.body);
+                    const messagesToRender = parsed.length > 0 ? parsed : [{ text: selectedEmail.body, defaultSender: selectedEmail.sender }];
+
+                    return messagesToRender.map((msg, idx) => {
+                      let cleanText = msg.text || '';
+                      cleanText = cleanText.replace(/--- Message \d+ From:.*?---/gi, '').trim();
+
+                      return (
+                        <div key={idx} className="email-body-card-light" style={{ backgroundColor: '#ffffff', borderRadius: '10px', border: '1px solid #e2e8f0', padding: '1.15rem', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '0.6rem', marginBottom: '0.75rem', borderBottom: '1px solid #f1f5f9' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem' }}>
+                              <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'linear-gradient(135deg, #3b82f6, #1d4ed8)', color: '#ffffff', fontWeight: 700, fontSize: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                {(msg.defaultSender || selectedEmail.sender || 'M').replace(/<.*?>/g, '').trim().slice(0, 2).toUpperCase()}
+                              </div>
+                              <div>
+                                <div style={{ fontWeight: 700, fontSize: '0.88rem', color: '#0f172a' }}>
+                                  {msg.defaultSender || selectedEmail.sender}
+                                </div>
+                                <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Message #{idx + 1}</div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap', fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', fontSize: '0.9rem', lineHeight: '1.65', color: '#1e293b' }}>
+                            {cleanText}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+
+                {/* ATTACHMENT OCR SECTION */}
+                {(() => {
+                  const ocrContent = selectedEmail.ocr_text || selectedEmail.ocr_snippet || '';
+                  if (!ocrContent || !ocrContent.trim()) return null;
+
+                  return (
+                    <div style={{ backgroundColor: '#ffffff', borderRadius: '10px', border: '1px solid #e2e8f0', padding: '1.15rem', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                        <div style={{ fontSize: '0.85rem', color: '#0f172a', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <Paperclip size={15} color="#4f46e5" />
+                          📄 Extracted PDF & Attachment Text (OCR)
+                        </div>
+                        <button style={{ padding: '0.22rem 0.6rem', fontSize: '0.72rem', borderRadius: '6px', cursor: 'pointer', border: '1px solid #cbd5e1', backgroundColor: '#f8fafc', color: copySuccess ? '#15803d' : '#475569', fontWeight: 600 }}
+                          onClick={() => {
+                            navigator.clipboard.writeText(ocrContent);
+                            setCopySuccess(true);
+                            setTimeout(() => setCopySuccess(false), 2000);
+                          }}>
+                          {copySuccess ? '✓ Copied!' : '📋 Copy OCR Text'}
+                        </button>
+                      </div>
+                      <div style={{ maxHeight: '240px', overflowY: 'auto', fontSize: '0.82rem', lineHeight: '1.6', backgroundColor: '#f8fafc', padding: '0.9rem', borderRadius: '8px', border: '1px solid #e2e8f0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#334155' }}>
+                        {ocrContent}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+              </div>
+
+              {/* RIGHT COLUMN: RICH EMAIL METADATA & SMART INSIGHTS */}
+              <div className="email-modal-right-pane-light" style={{ flex: '0 0 350px', width: '350px', minWidth: '310px', display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff', overflowY: 'auto' }}>
+                
+                {/* Section Header */}
+                <div style={{ padding: '0.9rem 1.15rem', borderBottom: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
+                  <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <Info size={15} color="#6366f1" />
+                    Email Intelligence & Actions
                   </div>
                 </div>
 
-                {/* OCR snippet */}
-                {selectedEmail.ocr_snippet && (
-                  <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem', marginTop: '0.75rem' }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.4rem' }}>Attachment OCR</div>
-                    <div style={{ maxHeight: '120px', overflowY: 'auto', fontSize: '0.8rem', backgroundColor: 'rgba(255, 255, 255, 0.04)', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--border-color)', whiteSpace: 'pre-wrap', fontFamily: 'monospace', color: 'var(--text-main)' }}>
-                      {selectedEmail.ocr_snippet}
+                <div style={{ padding: '1rem 1.15rem', display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1 }}>
+                  
+                  {/* 1. TENDER MATCH CARD */}
+                  <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
+                      🎯 Tender Match Info
                     </div>
-                  </div>
-                )}
-              </div>
-
-              {/* RIGHT COLUMN: Chat & Feedback Panel */}
-              <div style={{ width: '380px', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-                {/* Match Verification Header */}
-                {selectedEmail.match_id && (
-                  <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border-color)', backgroundColor: 'rgba(124, 58, 237, 0.03)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                      <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
-                        <ShieldAlert size={14} style={{ verticalAlign: 'middle', marginRight: '0.3rem' }} />
-                        Match Verification
-                      </span>
-                      {!showFeedbackForm && !feedbackLoading && (
-                        <div style={{ display: 'flex', gap: '0.4rem' }}>
-                          <button className="btn" style={{ padding: '0.25rem 0.6rem', fontSize: '0.7rem', backgroundColor: 'rgba(16, 185, 129, 0.1)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '6px', cursor: 'pointer' }}
-                            onClick={() => { setShowFeedbackForm(true); setFeedbackWasCorrect(true); }}>
-                            Correct
-                          </button>
-                          <button className="btn" style={{ padding: '0.25rem 0.6rem', fontSize: '0.7rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px', cursor: 'pointer' }}
-                            onClick={() => { setShowFeedbackForm(true); setFeedbackWasCorrect(false); }}>
-                            Wrong
-                          </button>
-                        </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.8rem' }}>
+                      <div><span style={{ color: '#64748b' }}>Matched Token:</span> <strong style={{ color: '#0f172a' }}>{selectedEmail.matchedToken || selectedEmail.matched_token || 'N/A'}</strong></div>
+                      {(selectedEmail.docket_no || selectedEmail.tender_no) && (
+                        <div><span style={{ color: '#64748b' }}>Docket / Tender:</span> <strong style={{ color: '#6366f1' }}>{selectedEmail.docket_no || selectedEmail.tender_no}</strong></div>
                       )}
+                      <div><span style={{ color: '#64748b' }}>Confidence:</span> <span style={{ color: selectedEmail.confidence === 'HIGH' ? '#15803d' : '#b45309', fontWeight: 600 }}>{selectedEmail.confidence || 'HIGH'}</span></div>
                     </div>
 
-                    {/* Feedback Form */}
-                    {showFeedbackForm && (
-                      <div style={{ padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.15)', borderRadius: '8px', marginTop: '0.25rem' }}>
-                        {feedbackWasCorrect ? (
-                          <div style={{ display: 'flex', gap: '0.5rem' }}>
-                            <button className="btn btn-primary" style={{ padding: '0.35rem 0.8rem', fontSize: '0.75rem', cursor: 'pointer' }}
-                              onClick={() => handleFeedback(selectedEmail.match_id, true)} disabled={feedbackLoading}>
-                              {feedbackLoading ? 'Saving...' : 'Confirm Correct'}
-                            </button>
-                            <button className="btn btn-secondary" style={{ padding: '0.35rem 0.8rem', fontSize: '0.75rem', cursor: 'pointer' }}
-                              onClick={() => setShowFeedbackForm(false)}>Cancel</button>
-                          </div>
-                        ) : (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                            <textarea
-                              placeholder="Explain why this match is wrong. This rule will be saved to the knowledge base..."
-                              value={feedbackRule}
-                              onChange={(e) => setFeedbackRule(e.target.value)}
-                              style={{ padding: '0.4rem', fontSize: '0.75rem', borderRadius: '6px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-input)', color: 'var(--text-main)', minHeight: '50px', resize: 'vertical', fontFamily: 'inherit' }}
-                            />
-                            <div style={{ display: 'flex', gap: '0.4rem' }}>
-                              <button className="btn" style={{ padding: '0.35rem 0.8rem', fontSize: '0.75rem', backgroundColor: '#ef4444', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
-                                onClick={() => handleFeedback(selectedEmail.match_id, false)} disabled={feedbackLoading || !feedbackRule.trim()}>
-                                {feedbackLoading ? 'Saving...' : 'Submit Rule & Flag Wrong'}
+                    {/* Match Verification Buttons if match_id exists */}
+                    {selectedEmail.match_id && (
+                      <div style={{ marginTop: '0.75rem', paddingTop: '0.6rem', borderTop: '1px solid #e2e8f0' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#475569' }}>Verify Match:</span>
+                          {!showFeedbackForm && !feedbackLoading && (
+                            <div style={{ display: 'flex', gap: '0.3rem' }}>
+                              <button style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', backgroundColor: '#ecfdf5', color: '#065f46', border: '1px solid #a7f3d0', borderRadius: '4px', cursor: 'pointer', fontWeight: 600 }}
+                                onClick={() => { setShowFeedbackForm(true); setFeedbackWasCorrect(true); }}>
+                                ✓ Correct
                               </button>
-                              <button className="btn btn-secondary" style={{ padding: '0.35rem 0.8rem', fontSize: '0.75rem', cursor: 'pointer' }}
-                                onClick={() => setShowFeedbackForm(false)}>Cancel</button>
+                              <button style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: '4px', cursor: 'pointer', fontWeight: 600 }}
+                                onClick={() => { setShowFeedbackForm(true); setFeedbackWasCorrect(false); }}>
+                                ✕ Wrong
+                              </button>
                             </div>
+                          )}
+                        </div>
+
+                        {showFeedbackForm && (
+                          <div style={{ padding: '0.5rem', backgroundColor: '#ffffff', borderRadius: '6px', border: '1px solid #cbd5e1', marginTop: '0.4rem' }}>
+                            {feedbackWasCorrect ? (
+                              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                                <button className="btn btn-primary" style={{ padding: '0.25rem 0.65rem', fontSize: '0.72rem', cursor: 'pointer' }}
+                                  onClick={() => handleFeedback(selectedEmail.match_id, true)} disabled={feedbackLoading}>
+                                  {feedbackLoading ? 'Saving...' : 'Confirm'}
+                                </button>
+                                <button className="btn btn-secondary" style={{ padding: '0.25rem 0.65rem', fontSize: '0.72rem', cursor: 'pointer' }}
+                                  onClick={() => setShowFeedbackForm(false)}>Cancel</button>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                                <textarea
+                                  placeholder="Why is this match wrong?"
+                                  value={feedbackRule}
+                                  onChange={(e) => setFeedbackRule(e.target.value)}
+                                  style={{ padding: '0.35rem', fontSize: '0.72rem', borderRadius: '4px', border: '1px solid #cbd5e1', backgroundColor: '#f8fafc', color: '#0f172a', minHeight: '45px', resize: 'vertical' }}
+                                />
+                                <div style={{ display: 'flex', gap: '0.3rem' }}>
+                                  <button style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', backgroundColor: '#ef4444', color: '#ffffff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 600 }}
+                                    onClick={() => handleFeedback(selectedEmail.match_id, false)} disabled={feedbackLoading || !feedbackRule.trim()}>
+                                    {feedbackLoading ? 'Saving...' : 'Flag Wrong'}
+                                  </button>
+                                  <button className="btn btn-secondary" style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', cursor: 'pointer' }}
+                                    onClick={() => setShowFeedbackForm(false)}>Cancel</button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
                     )}
+                  </div>
 
-                    {/* Re-verify button & result */}
-                    <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                      <button className="btn" style={{ padding: '0.3rem 0.7rem', fontSize: '0.72rem', backgroundColor: 'rgba(124, 58, 237, 0.1)', color: '#7c3aed', border: '1px solid rgba(124, 58, 237, 0.2)', borderRadius: '6px', cursor: 'pointer' }}
-                        onClick={() => handleReVerify(selectedEmail.match_id)} disabled={reVerifyLoading}>
-                        {reVerifyLoading ? 'Re-verifying...' : 'Re-verify Match'}
-                      </button>
-                      {reVerifyResult && (
-                        <span style={{ fontSize: '0.72rem', color: reVerifyResult.isMatch ? '#10b981' : '#ef4444' }}>
-                          {reVerifyResult.isMatch ? 'Match confirmed' : 'Match removed'}
-                          {reVerifyResult.reason && `: ${reVerifyResult.reason.substring(0, 80)}...`}
-                        </span>
-                      )}
+                  {/* 2. COMPANY & CATEGORY INFO */}
+                  <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
+                      🏢 Organization & Category
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.8rem' }}>
+                      <div><span style={{ color: '#64748b' }}>Company:</span> <strong style={{ color: '#0f172a' }}>{selectedEmail.company || 'Laser Power & Infra'}</strong></div>
+                      <div><span style={{ color: '#64748b' }}>Category:</span> <span style={{ color: '#475569' }}>{selectedEmail.category || 'Tender Inquiry'}</span></div>
+                      <div><span style={{ color: '#64748b' }}>Priority:</span> <span style={{ color: '#6366f1', fontWeight: 600 }}>{selectedEmail.priority || 'Normal'}</span></div>
                     </div>
                   </div>
-                )}
 
-                {/* Chat Messages */}
-                <div style={{ flex: 1, overflowY: 'auto', padding: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {chatMessages.length === 0 ? (
-                    <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', textAlign: 'center', padding: '2rem 0', fontStyle: 'italic' }}>
-                      {selectedEmail.match_id ? 'No chat messages yet. Use the feedback buttons above to start a conversation about this match.' : 'Select a matched email from the list to view its chat history.'}
-                    </div>
-                  ) : (
-                    chatMessages.map(msg => (
-                      <div key={msg.id} style={{
-                        alignSelf: msg.sender === 'user' ? 'flex-end' : 'flex-start',
-                        maxWidth: '85%',
-                        padding: '0.5rem 0.75rem',
-                        borderRadius: '12px',
-                        fontSize: '0.8rem',
-                        lineHeight: '1.4',
-                        backgroundColor: msg.sender === 'user' ? 'var(--color-primary)' : 'rgba(255,255,255,0.06)',
-                        color: msg.sender === 'user' ? '#fff' : 'var(--text-main)',
-                        border: msg.sender === 'user' ? 'none' : '1px solid var(--border-color)',
-                        borderBottomRightRadius: msg.sender === 'user' ? '4px' : '12px',
-                        borderTopLeftRadius: msg.sender === 'ai' ? '4px' : '12px'
-                      }}>
-                        <div style={{ fontSize: '0.65rem', opacity: 0.6, marginBottom: '0.15rem' }}>
-                          {msg.sender === 'user' ? 'You' : 'AI'} · {new Date(msg.created_at).toLocaleTimeString()}
-                        </div>
-                        <div style={{ whiteSpace: 'pre-wrap' }}>{msg.message}</div>
+                  {/* 3. ATTACHMENTS LIST IF AVAILABLE */}
+                  {selectedEmail.attach_names && (
+                    <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                      <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        <Paperclip size={12} color="#6366f1" />
+                        Attached Files ({selectedEmail.attach_names.split(',').length})
                       </div>
-                    ))
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                        {(() => {
+                          const names = selectedEmail.attach_names.split(',').map(n => n.trim());
+                          const links = selectedEmail.attach_links ? selectedEmail.attach_links.split(',').map(l => l.trim()) : [];
+                          return names.map((name, idx) => (
+                            <a 
+                              key={idx}
+                              href={links[idx] || '#'}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: '#2563eb', textDecoration: 'none', padding: '0.2rem 0', wordBreak: 'break-all' }}
+                            >
+                              <FileText size={12} />
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                            </a>
+                          ));
+                        })()}
+                      </div>
+                    </div>
                   )}
-                </div>
 
-                {/* Chat Input */}
-                {selectedEmail.match_id && (
-                  <div style={{ padding: '0.75rem', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '0.5rem' }}>
-                    <input
-                      type="text"
-                      placeholder="Type a message..."
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && !chatLoading) { sendChat(selectedEmail.match_id, chatInput, 'user'); } }}
-                      style={{ flex: 1, padding: '0.5rem 0.75rem', fontSize: '0.8rem', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-input)', color: 'var(--text-main)', outline: 'none' }}
-                    />
-                    <button className="btn btn-primary" style={{ padding: '0.5rem 0.75rem', fontSize: '0.8rem', cursor: 'pointer', borderRadius: '8px' }}
-                      onClick={() => sendChat(selectedEmail.match_id, chatInput, 'user')} disabled={chatLoading || !chatInput.trim()}>
-                      Send
-                    </button>
-                  </div>
-                )}
+                  {/* AI Chat Assistant hidden per user request */}
+
+                </div>
               </div>
+
             </div>
 
-            <div className="modal-footer" style={{ padding: '0.75rem 1.25rem', flexShrink: 0 }}>
-              <button className="btn btn-secondary" onClick={() => setSelectedEmail(null)}>Close</button>
+            {/* FIXED LIGHT FOOTER */}
+            <div className="email-modal-footer-light" style={{ padding: '0.75rem 1.5rem', borderTop: '1px solid #e2e8f0', backgroundColor: '#f8fafc', flexShrink: 0, display: 'flex', justifyContent: 'flex-end' }}>
+              <button 
+                style={{ borderRadius: '6px', padding: '0.4rem 1.25rem', fontSize: '0.82rem', cursor: 'pointer', backgroundColor: '#ffffff', color: '#334155', border: '1px solid #cbd5e1', fontWeight: 600, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }} 
+                onClick={() => setSelectedEmail(null)}
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>
       )}
-
-      {/* AI REPLY DRAFTING MODAL */}
+{/* AI REPLY DRAFTING MODAL */}
       {replyTender && (
         <div className="modal-backdrop" onClick={() => setReplyTender(null)} style={{ zIndex: 1100 }}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '800px', maxHeight: '90vh' }}>

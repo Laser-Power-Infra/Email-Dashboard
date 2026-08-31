@@ -884,22 +884,40 @@ function findAuthFile(filename) {
   return null;
 }
 
-// Google Sheets Client Setup
-// ----------------------------------------------------
 async function getSheetsClient() {
-  const credentialsPath = findAuthFile('credentials.json');
-  const tokenPath = findAuthFile('token.json');
+  let credentials, token, tokenPath;
 
-  if (!credentialsPath || !tokenPath) {
-    throw new Error('Google Sheets auth files (credentials.json and/or token.json) are missing in the project root.');
+  if (process.env.GOOGLE_CREDENTIALS_JSON && process.env.GOOGLE_TOKEN_JSON) {
+    credentials = typeof process.env.GOOGLE_CREDENTIALS_JSON === 'string' ? JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON) : process.env.GOOGLE_CREDENTIALS_JSON;
+    token = typeof process.env.GOOGLE_TOKEN_JSON === 'string' ? JSON.parse(process.env.GOOGLE_TOKEN_JSON) : process.env.GOOGLE_TOKEN_JSON;
+  } else {
+    const credentialsPath = findAuthFile('credentials.json');
+    tokenPath = findAuthFile('token.json');
+
+    if (!credentialsPath || !tokenPath) {
+      throw new Error('Google Sheets auth files (credentials.json and/or token.json) are missing in the project root.');
+    }
+
+    credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
+    token = JSON.parse(fs.readFileSync(tokenPath, 'utf8'));
   }
-
-  const credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
-  const token = JSON.parse(fs.readFileSync(tokenPath, 'utf8'));
 
   const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web;
   const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris ? redirect_uris[0] : 'http://localhost');
   oAuth2Client.setCredentials(token);
+
+  // Automatically save refreshed tokens back to token.json when Google OAuth auto-refreshes
+  oAuth2Client.on('tokens', (newTokens) => {
+    if (newTokens && tokenPath) {
+      try {
+        const mergedToken = { ...token, ...newTokens };
+        fs.writeFileSync(tokenPath, JSON.stringify(mergedToken, null, 2), 'utf8');
+        console.log('[Google Auth] Successfully updated token.json with refreshed access token.');
+      } catch (err) {
+        console.warn('[Google Auth] Could not save refreshed token to token.json:', err.message);
+      }
+    }
+  });
 
   return google.sheets({ version: 'v4', auth: oAuth2Client });
 }
@@ -3768,6 +3786,183 @@ app.get('/api/labels', async (req, res) => {
           const clean = l.trim();
           if (clean) uniqueLabels.add(clean);
         });
+
+// ── MATCH & EMAIL AI CHAT ENDPOINTS ──
+
+async function handleGetChat(req, res) {
+  console.log('[CHAT GET]', req.method, req.url, 'params:', req.params);
+  const matchId = req.params.id;
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const [rows] = await conn.execute(
+      `SELECT id, match_id, sender, message, created_at FROM match_chat WHERE match_id = ? ORDER BY created_at ASC`,
+      [matchId]
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching chat history:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
+}
+
+async function handlePostChat(req, res) {
+  console.log('[CHAT POST]', req.method, req.url, 'body:', req.body);
+  const matchId = req.params.id;
+  const { sender = 'user', message } = req.body;
+
+  if (!message || !message.trim()) {
+    return res.status(400).json({ error: 'Message is required' });
+  }
+
+  let conn;
+  try {
+    conn = await getDbConnection();
+
+    // 1. Insert user message into match_chat
+    await conn.execute(
+      `INSERT INTO match_chat (match_id, sender, message) VALUES (?, ?, ?)`,
+      [matchId, sender, message.trim()]
+    );
+
+    // 2. Fetch email context (Subject, Body, OCR text)
+    let emailSubject = '';
+    let emailBody = '';
+    let ocrSnippet = '';
+
+    // Check tender_matches first
+    const [matchRows] = await conn.execute(
+      `SELECT tm.id, tm.thread_db_id, t.subject, t.body, t.ocr_text 
+       FROM tender_matches tm 
+       LEFT JOIN threads t ON tm.thread_db_id = t.id 
+       WHERE tm.id = ?`,
+      [matchId]
+    );
+
+    if (matchRows.length > 0 && matchRows[0].subject) {
+      emailSubject = matchRows[0].subject || '';
+      emailBody = matchRows[0].body || '';
+      ocrSnippet = getOcrSnippet(matchRows[0].ocr_text);
+    } else {
+      // Check threads table directly using matchId
+      const [threadRows] = await conn.execute(
+        `SELECT subject, body, ocr_text FROM threads WHERE id = ?`,
+        [matchId]
+      );
+      if (threadRows.length > 0) {
+        emailSubject = threadRows[0].subject || '';
+        emailBody = threadRows[0].body || '';
+        ocrSnippet = getOcrSnippet(threadRows[0].ocr_text);
+      }
+    }
+
+    // 3. Fetch previous recent chat history
+    const [historyRows] = await conn.execute(
+      `SELECT sender, message FROM match_chat WHERE match_id = ? ORDER BY id DESC LIMIT 6`,
+      [matchId]
+    );
+    historyRows.reverse();
+
+    // 4. Build AI prompt
+    const cleanBody = (emailBody || '').replace(/<[^>]*>/g, '').substring(0, 3500);
+    const systemPrompt = `You are a helpful, intelligent procurement and tender AI assistant for Laser Power & Infra. 
+Help the user analyze and understand this email. Answer questions accurately, concisely, and professionally based on the email content, attachment data, and requirements provided.
+
+Email Subject: ${emailSubject}
+Email Body:
+${cleanBody}
+${ocrSnippet ? `\nAttachment Text (OCR):\n${ocrSnippet}` : ''}`;
+
+    const chatHistoryMessages = historyRows.map(h => ({
+      role: h.sender === 'user' ? 'user' : 'assistant',
+      content: h.message
+    }));
+
+    // 5. Query AI model
+    let aiReplyText = "I have analyzed this email. Please let me know what specific questions you have regarding this tender inquiry or order details.";
+    try {
+      const completion = await callChatCompletionsWithFallback({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...chatHistoryMessages
+        ],
+        temperature: 0.3,
+        max_tokens: 600
+      });
+      if (completion && completion.content) {
+        aiReplyText = completion.content.trim();
+      }
+    } catch (aiErr) {
+      console.warn('AI chat completion fallback warning:', aiErr.message);
+    }
+
+    // 6. Save AI reply to database
+    await conn.execute(
+      `INSERT INTO match_chat (match_id, sender, message) VALUES (?, 'ai', ?)`,
+      [matchId, aiReplyText]
+    );
+
+    // 7. Return complete updated chat history
+    const [allChat] = await conn.execute(
+      `SELECT id, match_id, sender, message, created_at FROM match_chat WHERE match_id = ? ORDER BY created_at ASC`,
+      [matchId]
+    );
+
+    res.json(allChat);
+  } catch (error) {
+    console.error('Error handling chat message:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
+}
+
+app.get('/api/matches/:id/chat', handleGetChat);
+app.get('/api/emails/:id/chat', handleGetChat);
+app.post('/api/matches/:id/chat', handlePostChat);
+app.post('/api/emails/:id/chat', handlePostChat);
+
+app.post('/api/matches/:id/feedback', async (req, res) => {
+  const matchId = req.params.id;
+  const { wasCorrect, userRule } = req.body;
+  let conn;
+  try {
+    conn = await getDbConnection();
+    await conn.execute(
+      `INSERT INTO match_feedback (match_id, was_correct, user_rule) VALUES (?, ?, ?)`,
+      [matchId, wasCorrect ? 1 : 0, userRule || '']
+    );
+    res.json({ success: true, message: 'Feedback saved successfully.' });
+  } catch (error) {
+    console.error('Error saving feedback:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
+});
+
+app.post('/api/emails/:id/feedback', async (req, res) => {
+  const matchId = req.params.id;
+  const { wasCorrect, userRule } = req.body;
+  let conn;
+  try {
+    conn = await getDbConnection();
+    await conn.execute(
+      `INSERT INTO match_feedback (match_id, was_correct, user_rule) VALUES (?, ?, ?)`,
+      [matchId, wasCorrect ? 1 : 0, userRule || '']
+    );
+    res.json({ success: true, message: 'Feedback saved successfully.' });
+  } catch (error) {
+    console.error('Error saving feedback:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
+});
+
+
       }
     });
 
@@ -4456,6 +4651,7 @@ setInterval(async () => {
 }, AUTO_SYNC_INTERVAL);
 
 // Start Server
+
 app.listen(PORT, async () => {
   console.log(`Server running on http://localhost:${PORT}`);
   // Run initial sync on startup to populate match data immediately
