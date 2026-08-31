@@ -1488,32 +1488,43 @@ function parseSheetRows(rows) {
   if (!rows || rows.length === 0) return [];
   const headers = rows[0].map(h => (h || '').trim().toLowerCase());
   
-  const getIndex = (name) => {
-    const normalizedName = name.toLowerCase().trim();
-    return headers.findIndex(h => {
-      const normalizedHeader = h.toLowerCase().trim();
-      return normalizedHeader === normalizedName || normalizedHeader.includes(normalizedName) || normalizedName.includes(normalizedHeader);
-    });
+  const getIndex = (possibleNames) => {
+    const names = Array.isArray(possibleNames) ? possibleNames : [possibleNames];
+    const normNames = names.map(n => n.toLowerCase().trim());
+
+    // Pass 1: Exact match
+    for (let i = 0; i < headers.length; i++) {
+      const h = headers[i];
+      if (normNames.some(n => h === n)) return i;
+    }
+    // Pass 2: Header contains target name (target name must be at least 3 chars to prevent false single-letter matches)
+    for (let i = 0; i < headers.length; i++) {
+      const h = headers[i];
+      for (const n of normNames) {
+        if (n.length >= 3 && h.includes(n)) return i;
+      }
+    }
+    return -1;
   };
   
-  const idxSlNo = getIndex("SL No.");
-  let idxDocket = getIndex("Docket No");
-  if (idxDocket === -1) idxDocket = 0; // Fallback to Column A (Timestamp)
-  const idxTenderFor = getIndex("Tender For");
-  const idxType = getIndex("Type of Tender");
-  let idxTenderNo = getIndex("Tender No / NIT No with Date");
-  if (idxTenderNo === -1) idxTenderNo = 3; // Fallback to Column D (Tender No / NIT No with Date)
-  const idxNameWork = getIndex("Name of Work / Item Description?");
-  const idxClient = getIndex("Name of the Client?");
-  const idxLastDate = getIndex("Last Date of Submission");
-  const idxOpeningDate = getIndex("Tender Opening Date");
-  const idxCost = getIndex("Cost of Tender / Tender Fee (In Rs)");
-  const idxEmd = getIndex("EMD Amount (In Rs)");
-  const idxEstimatedCost = getIndex("Estimated Cost (In Rs)");
-  const idxParticipated = headers.findIndex(h => h.includes('participated'));
-  const idxStatus = getIndex("Current Status");
-  const idxRemarks = getIndex("Remarks");
-  const idxPrepareBy = getIndex("Tender Prepare By");
+  const idxSlNo = getIndex(["sl no", "sl. no.", "sl.no", "serial no", "s.no", "slno"]);
+  let idxDocket = getIndex(["docket no", "docket number", "docket", "docket_no"]);
+  if (idxDocket === -1) idxDocket = 1;
+  const idxTenderFor = getIndex(["tender for", "company"]);
+  const idxType = getIndex(["type of tender", "type"]);
+  let idxTenderNo = getIndex(["tender no / nit no with date", "tender no", "nit no", "tender number"]);
+  if (idxTenderNo === -1) idxTenderNo = 4;
+  const idxNameWork = getIndex(["name of work / item description?", "name of work", "item description"]);
+  const idxClient = getIndex(["name of the client?", "name of the client", "client"]);
+  const idxLastDate = getIndex(["last date of submission", "last date", "submission date", "due date"]);
+  const idxOpeningDate = getIndex(["tender opening date", "opening date"]);
+  const idxCost = getIndex(["cost of tender", "tender fee"]);
+  const idxEmd = getIndex(["emd amount", "emd"]);
+  const idxEstimatedCost = getIndex(["estimated cost"]);
+  const idxParticipated = getIndex(["participated", "participated (yes/no)", "participation"]);
+  const idxStatus = getIndex(["current status", "status"]);
+  const idxRemarks = getIndex(["remarks", "remark"]);
+  const idxPrepareBy = getIndex(["tender prepare by", "prepare by"]);
 
   const tenders = [];
 
