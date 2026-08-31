@@ -908,13 +908,31 @@ async function getSheetsClient() {
 
   // Automatically save refreshed tokens back to token.json when Google OAuth auto-refreshes
   oAuth2Client.on('tokens', (newTokens) => {
-    if (newTokens && tokenPath) {
-      try {
-        const mergedToken = { ...token, ...newTokens };
-        fs.writeFileSync(tokenPath, JSON.stringify(mergedToken, null, 2), 'utf8');
-        console.log('[Google Auth] Successfully updated token.json with refreshed access token.');
-      } catch (err) {
-        console.warn('[Google Auth] Could not save refreshed token to token.json:', err.message);
+    if (newTokens) {
+      const mergedToken = { ...token, ...newTokens };
+      const tokenJsonStr = JSON.stringify(mergedToken, null, 2);
+      let saved = false;
+
+      if (tokenPath) {
+        try {
+          fs.writeFileSync(tokenPath, tokenJsonStr, 'utf8');
+          console.log('[Google Auth] Successfully updated token.json with refreshed access token.');
+          saved = true;
+        } catch (err) {
+          console.warn(`[Google Auth] Could not write to ${tokenPath} (${err.message}). Trying fallback location...`);
+        }
+      }
+
+      if (!saved) {
+        const fallbackPaths = [path.join(process.cwd(), 'token.json'), '/tmp/token.json'];
+        for (const fp of fallbackPaths) {
+          try {
+            fs.writeFileSync(fp, tokenJsonStr, 'utf8');
+            console.log(`[Google Auth] Saved refreshed token to fallback path: ${fp}`);
+            saved = true;
+            break;
+          } catch (e) {}
+        }
       }
     }
   });
