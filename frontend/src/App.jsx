@@ -693,6 +693,7 @@ function App() {
 
   // Chat & Feedback state
   const [showFullCc, setShowFullCc] = useState(false);
+  const [showFullReceivers, setShowFullReceivers] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
@@ -5484,14 +5485,107 @@ function App() {
                     </span>
                   )}
                   {detailedEmail.to_details && (
-                    <span style={{ marginLeft: '0.75rem', color: 'var(--color-secondary)' }}>
-                      | <strong>Receiver:</strong> {detailedEmail.to_details}
-                    </span>
+                    <div style={{ marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                      {(() => {
+                        const receivers = detailedEmail.to_details.split(',').map(r => r.trim()).filter(Boolean);
+                        const isLong = receivers.length > 2 || detailedEmail.to_details.length > 90;
+                        
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap', maxWidth: '100%' }}>
+                            <div style={{
+                              fontSize: '0.78rem',
+                              color: '#0284c7',
+                              backgroundColor: '#f0f9ff',
+                              padding: '0.25rem 0.65rem',
+                              borderRadius: '6px',
+                              border: '1px solid #bae6fd',
+                              maxHeight: showFullReceivers ? '150px' : '38px',
+                              overflowY: 'auto',
+                              wordBreak: 'break-all',
+                              lineHeight: '1.45',
+                              transition: 'max-height 0.2s ease-in-out',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '0.3rem'
+                            }}>
+                              <strong style={{ color: '#0369a1', flexShrink: 0 }}>Receiver ({receivers.length}):</strong>
+                              <span>{showFullReceivers || !isLong ? detailedEmail.to_details : receivers.slice(0, 2).join(', ') + '...'}</span>
+                            </div>
+
+                            {isLong && (
+                              <button 
+                                style={{
+                                  fontSize: '0.72rem',
+                                  padding: '0.15rem 0.55rem',
+                                  borderRadius: '6px',
+                                  border: '1px solid #cbd5e1',
+                                  backgroundColor: '#ffffff',
+                                  color: '#0284c7',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  boxShadow: '0 1px 2px rgba(0,0,0,0.03)'
+                                }}
+                                onClick={() => setShowFullReceivers(prev => !prev)}
+                              >
+                                {showFullReceivers ? 'Collapse' : `+ Show All (${receivers.length})`}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
                   )}
+
                   {detailedEmail.cc_details && (
-                    <span style={{ marginLeft: '0.75rem', color: 'var(--color-secondary)' }}>
-                      | <strong>CC:</strong> {detailedEmail.cc_details}
-                    </span>
+                    <div style={{ marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                      {(() => {
+                        const ccs = detailedEmail.cc_details.split(',').map(r => r.trim()).filter(Boolean);
+                        const isLong = ccs.length > 2 || detailedEmail.cc_details.length > 90;
+                        
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap', maxWidth: '100%' }}>
+                            <div style={{
+                              fontSize: '0.78rem',
+                              color: '#475569',
+                              backgroundColor: '#f8fafc',
+                              padding: '0.25rem 0.65rem',
+                              borderRadius: '6px',
+                              border: '1px solid #e2e8f0',
+                              maxHeight: showFullCc ? '150px' : '38px',
+                              overflowY: 'auto',
+                              wordBreak: 'break-all',
+                              lineHeight: '1.45',
+                              transition: 'max-height 0.2s ease-in-out',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '0.3rem'
+                            }}>
+                              <strong style={{ color: '#0f172a', flexShrink: 0 }}>CC ({ccs.length}):</strong>
+                              <span>{showFullCc || !isLong ? detailedEmail.cc_details : ccs.slice(0, 2).join(', ') + '...'}</span>
+                            </div>
+
+                            {isLong && (
+                              <button 
+                                style={{
+                                  fontSize: '0.72rem',
+                                  padding: '0.15rem 0.55rem',
+                                  borderRadius: '6px',
+                                  border: '1px solid #cbd5e1',
+                                  backgroundColor: '#ffffff',
+                                  color: '#475569',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  boxShadow: '0 1px 2px rgba(0,0,0,0.03)'
+                                }}
+                                onClick={() => setShowFullCc(prev => !prev)}
+                              >
+                                {showFullCc ? 'Collapse' : `+ Show All CC (${ccs.length})`}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
                   )}
                 </div>
                 )}
