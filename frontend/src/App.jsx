@@ -33,10 +33,97 @@ import {
   X
 } from 'lucide-react';
 
-function parseEmailThread(body) {
+function parseEmailThread(body, defaultSender = 'Sender') {
   if (!body || !body.trim()) return [];
 
-  // Step 1: Split thread primary by "--- Message X From: Y ---" markers
+  const text = body.trim();
+
+  // Pattern 1: Outlook/Standard inline split by "From: Name Sent: Date To: Recipient..."
+  const rawSplits = text.split(/(?:^|\r?\n)(?:_{3,}|-{3,})?\s*From:\s*/i);
+
+  if (rawSplits.length > 1) {
+    const messages = [];
+
+    // First portion before the first "From:"
+    let firstPart = rawSplits[0].trim();
+    firstPart = firstPart.replace(/^--- Message\s+\d+\s+From:\s*.*?---\s*/gi, '').trim();
+
+    if (firstPart.length > 0) {
+      messages.push({
+        sender: defaultSender,
+        date: '',
+        to: '',
+        cc: '',
+        subject: '',
+        text: firstPart,
+        body: firstPart
+      });
+    }
+
+    for (let i = 1; i < rawSplits.length; i++) {
+      const partClean = rawSplits[i].trim();
+      if (!partClean) continue;
+
+      let sender = '';
+      let date = '';
+      let to = '';
+      let cc = '';
+      let subject = '';
+      let msgBody = partClean;
+
+      // Locate Subject: header bound
+      const subMatch = partClean.match(/Subject:\s*([^\r\n]+)/i);
+      let headerEnd = partClean.length;
+      if (subMatch) {
+        subject = subMatch[1].trim();
+        const subIdx = partClean.search(/Subject:\s*/i);
+        if (subIdx !== -1) {
+          headerEnd = subIdx + subMatch[0].length;
+        }
+      }
+
+      const headerPortion = partClean.substring(0, headerEnd);
+      msgBody = partClean.substring(headerEnd).trim();
+
+      // Extract Sender
+      const senderMatch = headerPortion.match(/^([^\r\n;]+?)(?=\s+(?:Sent|Date|To|Cc|Subject):|$)/i);
+      if (senderMatch) {
+        sender = senderMatch[1].replace(/[<>]/g, '').trim();
+      }
+
+      // Extract Date
+      const dateMatch = headerPortion.match(/(?:Sent|Date):\s*([^\r\n;]+?)(?=\s+(?:To|Cc|Subject):|$)/i);
+      if (dateMatch) {
+        date = dateMatch[1].trim();
+      }
+
+      // Extract To
+      const toMatch = headerPortion.match(/To:\s*([^\r\n;]+?)(?=\s+(?:Cc|Subject):|$)/i);
+      if (toMatch) {
+        to = toMatch[1].replace(/[<>]/g, '').trim();
+      }
+
+      // Extract Cc
+      const ccMatch = headerPortion.match(/Cc:\s*([^\r\n;]+?)(?=\s+Subject:|$)/i);
+      if (ccMatch) {
+        cc = ccMatch[1].replace(/[<>]/g, '').trim();
+      }
+
+      messages.push({
+        sender: sender || defaultSender,
+        date,
+        to,
+        cc,
+        subject,
+        text: msgBody || partClean,
+        body: msgBody || partClean
+      });
+    }
+
+    if (messages.length > 0) return messages;
+  }
+
+  // Pattern 2: "--- Message X From: Y ---"
   const msgFromRegex = /--- Message\s+\d+\s+From:\s*(.*?)\s*---/gi;
   const matches = [];
   let m;
@@ -53,52 +140,71 @@ function parseEmailThread(body) {
     for (let i = 0; i < matches.length; i++) {
       const current = matches[i];
       const nextIndex = (i + 1 < matches.length) ? matches[i + 1].index : body.length;
-      let text = body.substring(current.index + current.length, nextIndex).trim();
+      let textSeg = body.substring(current.index + current.length, nextIndex).trim();
+      textSeg = textSeg.replace(/---------- Forwarded message ---------/gi, '').trim();
 
-      // Clean trailing email header artifacts if any
-      text = text.replace(/---------- Forwarded message ---------/gi, '').trim();
-
-      if (text.length > 0) {
+      if (textSeg.length > 0) {
         segments.push({
-          defaultSender: current.sender,
-          text: text
+          sender: current.sender || defaultSender,
+          date: '',
+          to: '',
+          cc: '',
+          subject: '',
+          text: textSeg,
+          body: textSeg
         });
       }
     }
     if (segments.length > 0) return segments;
   }
 
-  // Step 2: Split by "---------- Forwarded message ---------" if present
-  const fwdParts = body.split(/---------- Forwarded message ---------/gi);
-  if (fwdParts.length > 1) {
-    const segments = [];
-    fwdParts.forEach((part, idx) => {
-      const clean = part.trim();
-      if (clean.length > 0) {
-        // Extract sender from From: line if available
-        const senderMatch = clean.match(/(?:^|\r?\n)From:\s*(.*?)(?=\r?\n|$)/i);
-        const sender = senderMatch ? senderMatch[1].trim() : (idx === 0 ? 'Main Message' : 'Forwarded Message');
-        
-        // Strip header block lines (From:, Date:, Subject:, To:, Cc:) from top of body
-        let bodyText = clean;
-        bodyText = bodyText.replace(/^(?:From|Date|Subject|To|Cc):.*$/gim, '').trim();
-        
-        if (bodyText.length > 0) {
-          segments.push({
-            defaultSender: sender,
-            text: bodyText
-          });
-        }
-      }
-    });
-    if (segments.length > 0) return segments;
-  }
-
   // Fallback: Return single main message
   return [{
-    defaultSender: 'Main Message',
-    text: body.trim()
+    sender: defaultSender,
+    date: '',
+    to: '',
+    cc: '',
+    subject: '',
+    text: body.trim(),
+    body: body.trim()
   }];
+}
+
+function autoFormatUnstructuredText(text) {
+  if (!text || typeof text !== 'string') return '';
+
+  let t = text.trim();
+  // 1. Strip leading quotes like "> "
+  t = t.replace(/^\s*>\s*/gm, '');
+
+  // 2. Clean prefix headers
+  t = t.replace(/^--- Message \d+ From:.*?---\s*/gi, '');
+
+  // 3. Insert line breaks before Greetings / Salutations
+  t = t.replace(/\s+(?=(?:\*?Greetings|\*?Dear Sir|Dear Madam|Dear Mr|Dear Mrs))/gi, '\n\n');
+
+  // 4. Insert line breaks before Table Headers (*SL No.*, SL No., Material Description)
+  t = t.replace(/\s+(?=(?:\*?SL\s+No\.\*?|\*?Location\*?|\*?Material Description\*?|\*?UOM\*?|\*?QTY\*?))/gi, '\n');
+
+  // 5. Insert line breaks before numbered table rows (e.g. " 1 WTP Koraput", " 2 Intake Well", " 1 DIGITAL TEMPERTURE")
+  t = t.replace(/\s+(?=\d+\s+(?:WTP|Intake|Substation|Panel|Transformer|Scheme|[A-Z][a-z0-9]+ Scheme|[A-Z]{2,}\b|\d+ SQ|DIGITAL|MCB|HRC|MPCB|POWER|SWITCH|COMPENSATING|PID|MOTOR|BATTERY))/g, '\n');
+
+  // 6. Insert line breaks before TOTAL / GRAND TOTAL
+  t = t.replace(/\s+(?=(?:\*?TOTAL\*?|\*?GRAND TOTAL\*?))/gi, '\n');
+
+  // 7. Insert line breaks before Commercial Terms / Conditions headers
+  t = t.replace(/\s+(?=(?:Other commercial terms|Terms and conditions|\*?Share the GTP\*?|GST -|QUOTE VALIDITY|DELIVERY -|PAYMENT TERMS))/gi, '\n\n');
+
+  // 8. Insert line breaks before numbered list items (e.g. " 1. Please submit", " 2. Delivery period:")
+  t = t.replace(/\s+(?=\d+\.\s+[A-Z])/g, '\n');
+
+  // 9. Insert line breaks before Notes, Regards, Signatures
+  t = t.replace(/\s+(?=(?:Note:|Regards|\*?Thanks & Regards\*?|Sensitivity:|\*?L&T Construction\*?|Mrs\.\s+Dhwani|\*POWER ELECTRONICS\*))/gi, '\n\n');
+
+  // 10. Collapse 3+ newlines into double newlines
+  t = t.replace(/(\r?\n){3,}/g, '\n\n');
+
+  return t.trim();
 }
 
 function extractCssFromText(text) {
@@ -258,6 +364,7 @@ function App() {
   const [newCwDesc, setNewCwDesc] = useState('');
   const [editCodewordId, setEditCodewordId] = useState(null);
   const [editCodewordData, setEditCodewordData] = useState({});
+  const [copyFeedbackIdx, setCopyFeedbackIdx] = useState(null);
   // Sender mapping category/sub_category
   const [newSenderCategory, setNewSenderCategory] = useState('');
   const [newSenderSubCategory, setNewSenderSubCategory] = useState('');
@@ -1397,8 +1504,22 @@ function App() {
     const clean = String(dateStr).trim();
     if (clean === 'N/A' || clean === '' || clean === '-') return null;
 
+    const months = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+
+    // Format 0: Named Month Slash format e.g., "Sep/19/2023 4:00:06", "Sep/19/2023"
+    let m = clean.match(/^([a-z]{3,9})\/(\d{1,2})\/(\d{2,4})(?:\s+.*)?$/i);
+    if (m) {
+      let monthName = m[1].toLowerCase().substring(0, 3);
+      let day = Number(m[2]);
+      let year = Number(m[3]);
+      if (year < 100) year += 2000;
+      if (months[monthName] !== undefined) {
+        return new Date(year, months[monthName], day);
+      }
+    }
+
     // Format 1: Slash format (DD/MM/YYYY or DD/MM/YY) e.g., "28/08/2026", "28/8/26 15:00"
-    let m = clean.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+.*)?$/);
+    m = clean.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+.*)?$/);
     if (m) {
       let day = Number(m[1]);
       let month = Number(m[2]) - 1;
@@ -1434,7 +1555,6 @@ function App() {
     }
 
     // Format 5: Named Month format (DD-MMM-YYYY or DD MMM YYYY) e.g., "28-Aug-2026", "05-Sep-2026"
-    const months = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
     m = clean.match(/^(\d{1,2})[-\s]+([a-z]{3,9})[-\s]+(\d{2,4})(?:\s+.*)?$/i);
     if (m) {
       let day = Number(m[1]);
@@ -1448,6 +1568,109 @@ function App() {
 
     const d = new Date(clean);
     return isNaN(d.getTime()) ? null : d;
+  };
+
+  // Extract all HTTP/HTTPS links from body text, attachments, and html content
+  const extractEmailLinks = (email) => {
+    if (!email) return [];
+    const textSources = [
+      email.body || '',
+      email.subject || '',
+      email.attach_links || ''
+    ];
+    const combined = textSources.join(' ');
+
+    const hrefMatches = Array.from(combined.matchAll(/href=["'](https?:\/\/[^"'>\s]+)["']/gi)).map(m => m[1]);
+    const rawMatches = Array.from(combined.matchAll(/(https?:\/\/[^\s<"'>]+)/gi)).map(m => m[1]);
+
+    const seen = new Set();
+    const result = [];
+
+    [...hrefMatches, ...rawMatches].forEach(link => {
+      const clean = link.replace(/[\.,;\)]+$/, '').trim();
+      if (clean && !seen.has(clean) && clean.length > 8) {
+        seen.add(clean);
+        let domain = 'external';
+        try {
+          domain = new URL(clean).hostname.replace(/^www\./, '');
+        } catch (e) {
+          domain = 'link';
+        }
+
+        // Exclude Google Drive and Google Docs links per user request
+        const lowerUrl = clean.toLowerCase();
+        const lowerDomain = domain.toLowerCase();
+        if (
+          lowerDomain.includes('drive.google') ||
+          lowerDomain.includes('docs.google') ||
+          lowerUrl.includes('drive.google.com') ||
+          lowerUrl.includes('docs.google.com')
+        ) {
+          return;
+        }
+
+        result.push({ url: clean, domain });
+      }
+    });
+
+    return result;
+  };
+
+  // Locate match position (Subject, Body, Attachments, OCR) and extract surrounding context snippet
+  const getMatchSnippet = (email) => {
+    if (!email) return null;
+    const tokenStr = email.matchedToken || email.matched_token;
+    if (!tokenStr) return null;
+
+    const tokenList = String(tokenStr).split(',').map(t => t.trim()).filter(Boolean);
+    if (tokenList.length === 0) return null;
+
+    let location = '';
+    let snippet = '';
+
+    for (const tok of tokenList) {
+      const lowerTok = tok.toLowerCase();
+      // 1. Subject Check
+      if (email.subject && email.subject.toLowerCase().includes(lowerTok)) {
+        location = 'Subject Line';
+        snippet = email.subject;
+        break;
+      }
+      // 2. Attachment Filename Check
+      if (email.attach_names && email.attach_names.toLowerCase().includes(lowerTok)) {
+        location = 'Attachment File Name';
+        const files = email.attach_names.split(',');
+        const matchedFile = files.find(f => f.toLowerCase().includes(lowerTok)) || email.attach_names;
+        snippet = `File: ${matchedFile.trim()}`;
+        break;
+      }
+      // 3. Email Body Check
+      if (email.body && email.body.toLowerCase().includes(lowerTok)) {
+        location = 'Email Body Text';
+        const idx = email.body.toLowerCase().indexOf(lowerTok);
+        const start = Math.max(0, idx - 70);
+        const end = Math.min(email.body.length, idx + lowerTok.length + 70);
+        snippet = (start > 0 ? '...' : '') + email.body.substring(start, end).replace(/[\r\n]+/g, ' ') + (end < email.body.length ? '...' : '');
+        break;
+      }
+      // 4. OCR Text Check
+      const ocrText = email.ocr_text || email.ocr_snippet || '';
+      if (ocrText && ocrText.toLowerCase().includes(lowerTok)) {
+        location = 'Attached Document (PDF/Image OCR)';
+        const idx = ocrText.toLowerCase().indexOf(lowerTok);
+        const start = Math.max(0, idx - 70);
+        const end = Math.min(ocrText.length, idx + lowerTok.length + 70);
+        snippet = (start > 0 ? '...' : '') + ocrText.substring(start, end).replace(/[\r\n]+/g, ' ') + (end < ocrText.length ? '...' : '');
+        break;
+      }
+    }
+
+    if (!location) {
+      location = email.confidence === 'HIGH' ? 'Subject / Attachment File Name' : 'Email Body / Attached PDF OCR';
+      snippet = `Token "${tokenList[0]}" matched during candidate thread scan.`;
+    }
+
+    return { location, snippet, token: tokenList[0] };
   };
 
   const isSentinelDate = (dtStr) => {
@@ -1707,8 +1930,14 @@ function App() {
           t.docketNo?.toLowerCase().includes(query);
         if (!matchesSearch) return false;
       }
+      if (activeCompanyFilter) {
+        const comp = activeCompanyFilter.toLowerCase().trim();
+        const tComp = (t.tenderFor || t.company || '').toLowerCase().trim();
+        const tClient = (t.client || '').toLowerCase().trim();
+        if (!tComp.includes(comp) && !tClient.includes(comp)) return false;
+      }
       if (subStartDate || subEndDate) {
-        const subDate = parseGSheetDate(t.lastDate);
+        const subDate = parseGSheetDate(t.lastDate) || parseGSheetDate(t.docketNo);
         if (subDate) {
           const subDateStr = getLocalDateString(subDate);
           if (subStartDate && subDateStr < subStartDate) return false;
@@ -1719,7 +1948,7 @@ function App() {
       }
       return true;
     });
-  }, [tenders, searchQuery, subStartDate, subEndDate, excludeTenderTiger]);
+  }, [tenders, searchQuery, subStartDate, subEndDate, excludeTenderTiger, activeCompanyFilter]);
 
   const dashboardFilteredTenders = filteredTendersList;
 
@@ -1800,9 +2029,8 @@ function App() {
         }
       }
       if (subStartDate || subEndDate) {
-        const parentTender = tenderMap.get(`${email.docket_no}|${email.tender_no}`);
-        if (!parentTender) return false;
-        const subDate = parseGSheetDate(parentTender.lastDate);
+        const parentTender = tenderMap.get(`${email.docket_no}|${email.tender_no}`) || tenderMap.get(`docket_${email.docket_no}`) || tenderMap.get(`tender_${email.tender_no}`);
+        const subDate = parentTender ? (parseGSheetDate(parentTender.lastDate) || parseGSheetDate(parentTender.docketNo)) : parseGSheetDate(email.docket_no);
         if (subDate) {
           const subDateStr = getLocalDateString(subDate);
           if (subStartDate && subDateStr < subStartDate) return false;
@@ -1840,9 +2068,8 @@ function App() {
         }
       }
       if (subStartDate || subEndDate) {
-        const parentTender = tenderMap.get(`${email.docket_no}|${email.tender_no}`);
-        if (!parentTender) return false;
-        const subDate = parseGSheetDate(parentTender.lastDate);
+        const parentTender = tenderMap.get(`${email.docket_no}|${email.tender_no}`) || tenderMap.get(`docket_${email.docket_no}`) || tenderMap.get(`tender_${email.tender_no}`);
+        const subDate = parentTender ? (parseGSheetDate(parentTender.lastDate) || parseGSheetDate(parentTender.docketNo)) : parseGSheetDate(email.docket_no);
         if (subDate) {
           const subDateStr = getLocalDateString(subDate);
           if (subStartDate && subDateStr < subStartDate) return false;
@@ -2517,20 +2744,22 @@ function App() {
 
                 {loading && tenders.length === 0 ? (
                   <div className="loading-container"><div className="spinner"></div></div>
-                ) : filteredTenders.filter(t => t.matchCount > 0).length === 0 ? (
+                ) : dashboardFilteredTenders.filter(t => t.isParticipated || t.matchCount > 0).length === 0 ? (
                   <div className="empty-state">
                     <Info size={40} />
-                    <h3>No Matched Tenders</h3>
-                    <p>No tenders have matched emails yet. Try syncing or checking the credentials.</p>
+                    <h3>No Matched or Participated Tenders</h3>
+                    <p>No tenders match the selected company/date filters. Try clearing filters or syncing.</p>
                   </div>
                 ) : (
                   <div className="tenders-list" style={{ opacity: loading ? 0.75 : 1, transition: 'opacity 0.2s' }}>
-                    {filteredTenders
-                      .filter(t => t.matchCount > 0)
+                    {dashboardFilteredTenders
+                      .filter(t => t.isParticipated || t.matchCount > 0)
                       .sort((a, b) => {
-                        const da = a.latestEmailDate ? new Date(a.latestEmailDate).getTime() : 0;
-                        const db = b.latestEmailDate ? new Date(b.latestEmailDate).getTime() : 0;
-                        return db - da;
+                        const da = parseGSheetDate(a.lastDate) || parseGSheetDate(a.docketNo) || (a.latestEmailDate ? new Date(a.latestEmailDate) : null);
+                        const db = parseGSheetDate(b.lastDate) || parseGSheetDate(b.docketNo) || (b.latestEmailDate ? new Date(b.latestEmailDate) : null);
+                        const ta = da ? da.getTime() : 0;
+                        const tb = db ? db.getTime() : 0;
+                        return tb - ta;
                       })
                       .slice(0, 5)
                       .map(t => (
@@ -4433,10 +4662,10 @@ function App() {
             onClick={(e) => e.stopPropagation()}
             style={{
               position: 'relative',
-              width: '980px',
-              maxWidth: '92vw',
-              height: '80vh',
-              maxHeight: '80vh',
+              width: '1280px',
+              maxWidth: '95vw',
+              height: '88vh',
+              maxHeight: '90vh',
               backgroundColor: '#ffffff',
               border: '1px solid #cbd5e1',
               borderRadius: '14px',
@@ -4519,29 +4748,81 @@ function App() {
                   </div>
                 </div>
 
-                {/* Close Button */}
-                <button 
-                  onClick={() => setSelectedEmail(null)} 
-                  title="Close Email Viewer"
-                  style={{ 
-                    background: '#ffffff', 
-                    border: '1px solid #cbd5e1', 
-                    borderRadius: '50%', 
-                    width: '34px', 
-                    height: '34px', 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    justifyContent: 'center', 
-                    color: '#475569', 
-                    fontSize: '1.1rem',
-                    cursor: 'pointer', 
-                    flexShrink: 0,
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-                    transition: 'all 0.15s ease'
-                  }}
-                >
-                  ✕
-                </button>
+                {/* Actions & Close Button */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                  <a
+                    href={selectedEmail.thread_id ? `https://mail.google.com/mail/#all/${selectedEmail.thread_id}` : `https://mail.google.com/mail/#search/subject:"${encodeURIComponent((selectedEmail.subject || '').replace(/^(re|fwd):\s*/i, '').trim())}"`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.35rem',
+                      padding: '0.35rem 0.75rem',
+                      backgroundColor: '#ea4335',
+                      color: '#ffffff',
+                      fontSize: '0.75rem',
+                      fontWeight: 600,
+                      borderRadius: '6px',
+                      textDecoration: 'none',
+                      boxShadow: '0 1px 3px rgba(234,67,53,0.3)',
+                      transition: 'opacity 0.2s'
+                    }}
+                    title="Open this exact thread directly in Gmail"
+                  >
+                    <ExternalLink size={12} color="#ffffff" />
+                    Open in Gmail
+                  </a>
+
+                  {selectedEmail.subject && (
+                    <a
+                      href={`https://mail.google.com/mail/#search/subject:"${encodeURIComponent(selectedEmail.subject.replace(/^(re|fwd):\s*/i, '').trim())}"`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        padding: '0.35rem 0.65rem',
+                        backgroundColor: '#ffffff',
+                        color: '#ea4335',
+                        border: '1px solid #ea4335',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        borderRadius: '6px',
+                        textDecoration: 'none',
+                        transition: 'opacity 0.2s'
+                      }}
+                      title="Search by Email Subject in Gmail"
+                    >
+                      <Search size={12} color="#ea4335" />
+                      Search Subject
+                    </a>
+                  )}
+
+                  <button 
+                    onClick={() => setSelectedEmail(null)} 
+                    title="Close Email Viewer"
+                    style={{ 
+                      background: '#ffffff', 
+                      border: '1px solid #cbd5e1', 
+                      borderRadius: '50%', 
+                      width: '34px', 
+                      height: '34px', 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center', 
+                      color: '#64748b', 
+                      cursor: 'pointer',
+                      fontSize: '1rem',
+                      fontWeight: 600,
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -4623,43 +4904,150 @@ function App() {
                   </div>
                 </div>
 
-                {/* PARSED EMAIL THREAD */}
+                {/* PARSED EMAIL THREAD TIMELINE */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                   <div style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                     <Mail size={14} color="#6366f1" />
-                    Email Thread Messages ({parseEmailThread(selectedEmail.body).length || 1})
+                    Structured Email Thread Messages ({parseEmailThread(selectedEmail.body, selectedEmail.sender).length || 1})
                   </div>
 
                   {(() => {
-                    const parsed = parseEmailThread(selectedEmail.body);
-                    const messagesToRender = parsed.length > 0 ? parsed : [{ text: selectedEmail.body, defaultSender: selectedEmail.sender }];
+                    const parsed = parseEmailThread(selectedEmail.body, selectedEmail.sender);
+                    const messagesToRender = parsed.length > 0 ? parsed : [{ text: selectedEmail.body, sender: selectedEmail.sender, date: selectedEmail.date_received || selectedEmail.date }];
 
-                    return messagesToRender.map((msg, idx) => {
-                      let cleanText = msg.text || '';
-                      cleanText = cleanText.replace(/--- Message \d+ From:.*?---/gi, '').trim();
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', position: 'relative', paddingLeft: '1.25rem' }}>
+                        {messagesToRender.length > 1 && (
+                          <div style={{ position: 'absolute', left: '0.6rem', top: '1.2rem', bottom: '1.2rem', width: '2px', background: '#cbd5e1', zIndex: 1 }}></div>
+                        )}
 
-                      return (
-                        <div key={idx} className="email-body-card-light" style={{ backgroundColor: '#ffffff', borderRadius: '10px', border: '1px solid #e2e8f0', padding: '1.15rem', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '0.6rem', marginBottom: '0.75rem', borderBottom: '1px solid #f1f5f9' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem' }}>
-                              <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'linear-gradient(135deg, #3b82f6, #1d4ed8)', color: '#ffffff', fontWeight: 700, fontSize: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                {(msg.defaultSender || selectedEmail.sender || 'M').replace(/<.*?>/g, '').trim().slice(0, 2).toUpperCase()}
-                              </div>
-                              <div>
-                                <div style={{ fontWeight: 700, fontSize: '0.88rem', color: '#0f172a' }}>
-                                  {msg.defaultSender || selectedEmail.sender}
+                        {messagesToRender.map((msg, idx) => {
+                          const stepLabel = idx === 0 ? '📩 Latest Email' : (idx === messagesToRender.length - 1 ? '✉️ Original Inquiry' : `💬 Reply #${messagesToRender.length - idx}`);
+                          const badgeBg = idx === 0 ? '#eff6ff' : '#f8fafc';
+                          const badgeColor = idx === 0 ? '#1d4ed8' : '#475569';
+                          const badgeBorder = idx === 0 ? '#bfdbfe' : '#cbd5e1';
+                          const msgSender = msg.sender || msg.defaultSender || selectedEmail.sender;
+
+                          return (
+                            <div key={idx} style={{ position: 'relative', zIndex: 2, backgroundColor: '#ffffff', borderRadius: '10px', border: '1px solid #cbd5e1', padding: '1.15rem', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '0.6rem', marginBottom: '0.75rem', borderBottom: '1px solid #f1f5f9', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flex: 1, minWidth: 0 }}>
+                                  <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: idx === 0 ? 'linear-gradient(135deg, #6366f1, #4f46e5)' : '#cbd5e1', color: '#ffffff', fontWeight: 700, fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                    {msgSender.replace(/<.*?>/g, '').trim().charAt(0).toUpperCase()}
+                                  </div>
+                                  <div style={{ minWidth: 0, flex: 1 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                      <span style={{ fontWeight: 700, fontSize: '0.9rem', color: '#0f172a' }}>{msgSender}</span>
+                                      <span style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem', borderRadius: '4px', backgroundColor: badgeBg, color: badgeColor, border: `1px solid ${badgeBorder}`, fontWeight: 700 }}>
+                                        {stepLabel}
+                                      </span>
+                                    </div>
+                                    {msg.date && <div style={{ fontSize: '0.73rem', color: '#64748b', marginTop: '0.15rem' }}>📅 {msg.date}</div>}
+                                  </div>
                                 </div>
-                                <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Message #{idx + 1}</div>
                               </div>
-                            </div>
-                          </div>
 
-                          <div style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap', fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', fontSize: '0.9rem', lineHeight: '1.65', color: '#1e293b' }}>
-                            {cleanText}
-                          </div>
-                        </div>
-                      );
-                    });
+                              {(msg.subject || msg.to || msg.cc) && (
+                                <div style={{ fontSize: '0.78rem', color: '#475569', backgroundColor: '#f8fafc', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid #e2e8f0', marginBottom: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                  {msg.subject && <div><strong style={{ color: '#0f172a' }}>Subject:</strong> {msg.subject}</div>}
+                                  {msg.to && <div><strong style={{ color: '#0f172a' }}>To:</strong> {msg.to}</div>}
+                                  {msg.cc && <div><strong style={{ color: '#0f172a' }}>Cc:</strong> {msg.cc}</div>}
+                                </div>
+                              )}
+
+                              {(() => {
+                                let rawMsgText = msg.body || msg.text || '';
+                                let msgText = rawMsgText.replace(/^--- Message \d+ From:.*?---\s*/gi, '').trim();
+                                msgText = msgText.replace(/(\r?\n){3,}/g, '\n\n');
+
+                                const { css, cleanText } = extractCssFromText(msgText);
+                                const lower = cleanText.toLowerCase();
+
+                                const hasHtml = (
+                                  lower.includes('<html') ||
+                                  lower.includes('<div') ||
+                                  lower.includes('<p') ||
+                                  lower.includes('<span') ||
+                                  lower.includes('<table') ||
+                                  lower.includes('<body') ||
+                                  lower.includes('<br') ||
+                                  lower.includes('<a ') ||
+                                  lower.includes('<!doctype html') ||
+                                  /<[a-z][\s\S]*>/i.test(cleanText)
+                                );
+
+                                const hasCss = css.trim().length > 0;
+
+                                if (hasHtml || hasCss) {
+                                  const bodyContent = hasHtml ? cleanText : `<div style="white-space: pre-wrap; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.6;">${cleanText}</div>`;
+                                  return (
+                                    <div style={{ border: '1px solid #cbd5e1', borderRadius: '8px', overflow: 'hidden', backgroundColor: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.03)' }}>
+                                      <iframe
+                                        title={`Matched Message ${idx}`}
+                                        srcDoc={`
+                                          <!DOCTYPE html>
+                                          <html>
+                                            <head>
+                                              <meta charset="utf-8">
+                                              <style>
+                                                body {
+                                                  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                                                  font-size: 14px;
+                                                  line-height: 1.65;
+                                                  color: #1e293b;
+                                                  margin: 1.1rem;
+                                                  word-wrap: break-word;
+                                                }
+                                                img { max-width: 100%; height: auto; }
+                                                table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; }
+                                                th, td { border: 1px solid #cbd5e1; padding: 6px 10px; font-size: 13px; text-align: left; }
+                                                th { background-color: #f1f5f9; font-weight: 700; }
+                                                a { color: #2563eb; text-decoration: underline; }
+                                                ${css}
+                                              </style>
+                                            </head>
+                                            <body>
+                                              ${bodyContent}
+                                            </body>
+                                          </html>
+                                        `}
+                                        style={{ width: '100%', height: '360px', border: 'none', display: 'block', background: '#ffffff' }}
+                                        sandbox="allow-popups"
+                                      />
+                                    </div>
+                                  );
+                                }
+
+                                const isTabular = lower.includes('sl ') || lower.includes('uom') || lower.includes('qty') || lower.includes('discount') || lower.includes('rate') || lower.includes('make') || /^\s*\d+\s+[a-z]/im.test(cleanText);
+                                const formattedText = autoFormatUnstructuredText(msgText);
+
+                                return (
+                                  <div 
+                                    style={{ 
+                                      whiteSpace: 'pre-wrap', 
+                                      fontFamily: isTabular ? 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace' : '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', 
+                                      fontSize: isTabular ? '0.84rem' : '0.88rem', 
+                                      lineHeight: '1.7', 
+                                      color: '#0f172a',
+                                      wordBreak: 'break-word',
+                                      backgroundColor: '#f8fafc',
+                                      padding: '1rem 1.15rem',
+                                      borderRadius: '8px',
+                                      border: '1px solid #cbd5e1',
+                                      maxHeight: '450px',
+                                      overflowY: 'auto',
+                                      letterSpacing: isTabular ? '-0.15px' : 'normal'
+                                    }}
+                                  >
+                                    {formattedText}
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
                   })()}
                 </div>
 
@@ -4707,19 +5095,40 @@ function App() {
                 <div style={{ padding: '1rem 1.15rem', display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1 }}>
                   
                   {/* 1. TENDER MATCH CARD */}
-                  <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                    <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-                      🎯 Tender Match Info
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.8rem' }}>
-                      <div><span style={{ color: '#64748b' }}>Matched Token:</span> <strong style={{ color: '#0f172a' }}>{selectedEmail.matchedToken || selectedEmail.matched_token || 'N/A'}</strong></div>
-                      {(selectedEmail.docket_no || selectedEmail.tender_no) && (
-                        <div><span style={{ color: '#64748b' }}>Docket / Tender:</span> <strong style={{ color: '#6366f1' }}>{selectedEmail.docket_no || selectedEmail.tender_no}</strong></div>
-                      )}
-                      <div><span style={{ color: '#64748b' }}>Confidence:</span> <span style={{ color: selectedEmail.confidence === 'HIGH' ? '#15803d' : '#b45309', fontWeight: 600 }}>{selectedEmail.confidence || 'HIGH'}</span></div>
-                    </div>
+                  {(() => {
+                    const matchInfo = getMatchSnippet(selectedEmail);
+                    return (
+                      <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                        <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span>🎯 Tender Match Info</span>
+                          <span style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem', borderRadius: '4px', backgroundColor: selectedEmail.confidence === 'HIGH' ? '#ecfdf5' : '#fffbeb', color: selectedEmail.confidence === 'HIGH' ? '#065f46' : '#b45309', border: selectedEmail.confidence === 'HIGH' ? '1px solid #a7f3d0' : '1px solid #fde68a', fontWeight: 700 }}>
+                            {selectedEmail.confidence || 'HIGH'} Confidence
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.8rem' }}>
+                          <div><span style={{ color: '#64748b' }}>Matched Token:</span> <strong style={{ color: '#0f172a', wordBreak: 'break-all' }}>{selectedEmail.matchedToken || selectedEmail.matched_token || 'N/A'}</strong></div>
+                          {(selectedEmail.docket_no || selectedEmail.tender_no) && (
+                            <div><span style={{ color: '#64748b' }}>Docket / Tender:</span> <strong style={{ color: '#6366f1' }}>{selectedEmail.docket_no || selectedEmail.tender_no}</strong></div>
+                          )}
+                        </div>
 
-                    {/* Match Verification Buttons if match_id exists */}
+                        {matchInfo && (
+                          <div style={{ marginTop: '0.65rem', paddingTop: '0.55rem', borderTop: '1px solid #e2e8f0' }}>
+                            <div style={{ fontSize: '0.73rem', fontWeight: 700, color: '#475569', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem', flexWrap: 'wrap' }}>
+                              📍 Matched In:
+                              <span style={{ color: '#1e40af', fontWeight: 700, backgroundColor: '#eff6ff', padding: '0.15rem 0.45rem', borderRadius: '4px', border: '1px solid #bfdbfe' }}>
+                                {matchInfo.location}
+                              </span>
+                            </div>
+                            {matchInfo.snippet && (
+                              <div style={{ fontSize: '0.73rem', color: '#334155', backgroundColor: '#ffffff', padding: '0.5rem 0.65rem', borderRadius: '6px', border: '1px solid #cbd5e1', fontStyle: 'italic', wordBreak: 'break-word', lineHeight: '1.4' }}>
+                                "{matchInfo.snippet}"
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Match Verification Buttons if match_id exists */}
                     {selectedEmail.match_id && (
                       <div style={{ marginTop: '0.75rem', paddingTop: '0.6rem', borderTop: '1px solid #e2e8f0' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
@@ -4772,6 +5181,8 @@ function App() {
                       </div>
                     )}
                   </div>
+                );
+              })()}
 
                   {/* 2. COMPANY & CATEGORY INFO */}
                   <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
@@ -4813,7 +5224,53 @@ function App() {
                     </div>
                   )}
 
-                  {/* AI Chat Assistant hidden per user request */}
+                  {/* 4. EXTRACTED LINKS SECTION */}
+                  {(() => {
+                    const extractedLinks = extractEmailLinks(selectedEmail);
+                    return (
+                      <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                        <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                          <ExternalLink size={13} color="#2563eb" />
+                          Extracted Links ({extractedLinks.length})
+                        </div>
+                        {extractedLinks.length === 0 ? (
+                          <div style={{ fontSize: '0.75rem', color: '#94a3b8', fontStyle: 'italic' }}>No external links found in email content.</div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', maxHeight: '220px', overflowY: 'auto', paddingRight: '0.2rem' }}>
+                            {extractedLinks.map((linkObj, idx) => (
+                              <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', padding: '0.35rem 0.5rem', backgroundColor: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '6px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', minWidth: 0, flex: 1 }}>
+                                  <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.35rem', backgroundColor: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: '4px', fontWeight: 600, flexShrink: 0 }}>
+                                    {linkObj.domain}
+                                  </span>
+                                  <a 
+                                    href={linkObj.url} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer" 
+                                    style={{ fontSize: '0.75rem', color: '#2563eb', textDecoration: 'underline', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}
+                                    title={linkObj.url}
+                                  >
+                                    {linkObj.url}
+                                  </a>
+                                </div>
+                                <button
+                                  style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem', border: '1px solid #cbd5e1', backgroundColor: '#f1f5f9', color: '#334155', borderRadius: '4px', cursor: 'pointer', flexShrink: 0, fontWeight: 600 }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(linkObj.url);
+                                    setCopyFeedbackIdx(idx);
+                                    setTimeout(() => setCopyFeedbackIdx(null), 1500);
+                                  }}
+                                >
+                                  {copyFeedbackIdx === idx ? '✓ Copied' : 'Copy'}
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                 </div>
               </div>
@@ -5014,7 +5471,7 @@ function App() {
       {/* RICH EMAIL DETAIL INSPECTOR MODAL */}
       {emailDetailModalOpen && (detailedEmailLoading || detailedEmail) && (
         <div className="modal-backdrop" onClick={() => setEmailDetailModalOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '900px', maxHeight: '90vh' }}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: '1280px', maxWidth: '95vw', height: '88vh', maxHeight: '90vh', backgroundColor: '#ffffff', borderRadius: '14px', border: '1px solid #cbd5e1', boxShadow: '0 20px 50px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             <div className="modal-header">
               <div>
                 <h2>Email Inspector</h2>
@@ -5039,7 +5496,62 @@ function App() {
                 </div>
                 )}
               </div>
-              <button className="modal-close" onClick={() => setEmailDetailModalOpen(false)}>✕</button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {detailedEmail && (
+                  <>
+                    <a
+                      href={detailedEmail.thread_id ? `https://mail.google.com/mail/#all/${detailedEmail.thread_id}` : `https://mail.google.com/mail/#search/subject:"${encodeURIComponent((detailedEmail.subject || '').replace(/^(re|fwd):\s*/i, '').trim())}"`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        padding: '0.35rem 0.75rem',
+                        backgroundColor: '#ea4335',
+                        color: '#ffffff',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        borderRadius: '6px',
+                        textDecoration: 'none',
+                        boxShadow: '0 1px 3px rgba(234,67,53,0.3)',
+                        transition: 'opacity 0.2s'
+                      }}
+                      title="Open this exact thread directly in Gmail"
+                    >
+                      <ExternalLink size={12} color="#ffffff" />
+                      Open in Gmail
+                    </a>
+
+                    {detailedEmail.subject && (
+                      <a
+                        href={`https://mail.google.com/mail/#search/subject:"${encodeURIComponent(detailedEmail.subject.replace(/^(re|fwd):\s*/i, '').trim())}"`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.35rem',
+                          padding: '0.35rem 0.65rem',
+                          backgroundColor: '#ffffff',
+                          color: '#ea4335',
+                          border: '1px solid #ea4335',
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          borderRadius: '6px',
+                          textDecoration: 'none',
+                          transition: 'opacity 0.2s'
+                        }}
+                        title="Search by Email Subject in Gmail"
+                      >
+                        <Search size={12} color="#ea4335" />
+                        Search Subject
+                      </a>
+                    )}
+                  </>
+                )}
+                <button className="modal-close" onClick={() => setEmailDetailModalOpen(false)}>✕</button>
+              </div>
             </div>
 
             <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', overflowY: 'auto', padding: '1.5rem' }}>
@@ -5186,7 +5698,7 @@ function App() {
                   <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
                     Email Message Content
                   </div>
-                  {/* View Mode Toggle (only if there are multiple nested messages in the thread) */}
+                  {/* View Mode Toggle (if multiple messages exist) */}
                   {detailedEmail.body && threadMessages.length > 1 && (
                     <div style={{ display: 'flex', gap: '0.25rem', backgroundColor: 'rgba(255,255,255,0.03)', padding: '0.2rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
                       <button
@@ -5207,22 +5719,20 @@ function App() {
                   )}
                 </div>
 
-                {emailViewMode === 'threaded' && detailedEmail.body && threadMessages.length > 1 ? (
-                  /* Beautiful Conversation Thread UI */
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', position: 'relative', paddingLeft: '1.5rem', marginTop: '0.5rem' }}>
-                    {/* Vertical timeline connector line */}
-                    <div style={{
-                      position: 'absolute',
-                      left: '0.75rem',
-                      top: '1.5rem',
-                      bottom: '1.5rem',
-                      width: '2px',
-                      background: 'var(--border-color)',
-                      zIndex: 1
-                    }}></div>
+                {emailViewMode === 'threaded' || threadMessages.length <= 1 ? (
+                  /* Beautiful Conversation Card UI for ALL Emails (Single & Multiple) */
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', position: 'relative', paddingLeft: threadMessages.length > 1 ? '1.5rem' : '0', marginTop: '0.5rem' }}>
+                    {threadMessages.length > 1 && (
+                      <div style={{ position: 'absolute', left: '0.75rem', top: '1.5rem', bottom: '1.5rem', width: '2px', background: 'var(--border-color)', zIndex: 1 }}></div>
+                    )}
 
-                    {threadMessages.map((msg, idx) => {
-                      const isExpanded = !!expandedThreadMessages[idx];
+                    {(threadMessages.length > 0 ? threadMessages : [{ text: detailedEmail.body, sender: detailedEmail.sender, date: detailedEmail.date_received || detailedEmail.date }]).map((msg, idx) => {
+                      const isExpanded = expandedThreadMessages[idx] !== false;
+                      const msgSender = msg.sender || msg.defaultSender || detailedEmail.sender || 'Sender';
+                      const stepLabel = threadMessages.length > 1
+                        ? (idx === 0 ? '📩 Latest Email' : (idx === threadMessages.length - 1 ? '✉️ Original Inquiry' : `💬 Reply #${threadMessages.length - idx}`))
+                        : '📩 Main Message';
+
                       return (
                         <div 
                           key={idx} 
@@ -5233,10 +5743,9 @@ function App() {
                             borderRadius: '12px',
                             backgroundColor: 'var(--bg-card)',
                             overflow: 'hidden',
-                            boxShadow: isExpanded ? '0 4px 20px rgba(0,0,0,0.15)' : 'none',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
                             transition: 'box-shadow var(--transition-fast)'
                           }}
-                          className="row-interactive"
                         >
                           {/* Message Header */}
                           <div 
@@ -5245,49 +5754,49 @@ function App() {
                               justifyContent: 'space-between',
                               alignItems: 'center',
                               padding: '0.85rem 1.25rem',
-                              backgroundColor: 'rgba(255,255,255,0.01)',
+                              backgroundColor: 'rgba(255,255,255,0.02)',
                               borderBottom: isExpanded ? '1px solid var(--border-color)' : 'none',
                               cursor: 'pointer',
                               userSelect: 'none'
                             }}
                             onClick={() => setExpandedThreadMessages(prev => ({ ...prev, [idx]: !prev[idx] }))}
                           >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', minWidth: 0, flex: 1 }}>
                               {/* Avatar Icon */}
                               <div style={{
                                 width: '32px',
                                 height: '32px',
                                 borderRadius: '50%',
-                                backgroundColor: 'rgba(99, 102, 241, 0.1)',
-                                border: '1px solid rgba(99, 102, 241, 0.2)',
+                                backgroundColor: idx === 0 ? '#6366f1' : '#cbd5e1',
+                                color: '#ffffff',
+                                fontWeight: 700,
+                                fontSize: '0.85rem',
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'center',
-                                fontWeight: 600,
-                                color: 'var(--color-primary-light)',
-                                fontSize: '0.85rem'
+                                flexShrink: 0
                               }}>
-                                {msg.sender ? msg.sender.charAt(0).toUpperCase() : 'U'}
+                                {msgSender.replace(/<.*?>/g, '').trim().charAt(0).toUpperCase()}
                               </div>
-                              <div>
-                                <div style={{ fontWeight: 600, color: 'var(--text-main)', fontSize: '0.88rem' }}>
-                                  {msg.sender}
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                  <span style={{ fontWeight: 700, color: 'var(--text-main)', fontSize: '0.9rem' }}>
+                                    {msgSender}
+                                  </span>
+                                  <span style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem', borderRadius: '4px', backgroundColor: idx === 0 ? '#eff6ff' : '#f8fafc', color: idx === 0 ? '#1d4ed8' : '#475569', border: '1px solid ' + (idx === 0 ? '#bfdbfe' : '#cbd5e1'), fontWeight: 700 }}>
+                                    {stepLabel}
+                                  </span>
                                 </div>
-                                {(msg.cc || (idx === 0 && detailedEmail.cc_details)) && (
-                                  <div style={{ fontSize: '0.73rem', color: 'var(--color-secondary)', marginTop: '0.1rem' }}>
-                                    <strong>CC:</strong> {msg.cc || detailedEmail.cc_details}
-                                  </div>
-                                )}
-                                {msg.date && (
-                                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
-                                    {msg.date}
+                                {(msg.date || detailedEmail.date || detailedEmail.date_received) && (
+                                  <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                                    📅 {msg.date || formatDateTime(detailedEmail.date || detailedEmail.date_received)}
                                   </div>
                                 )}
                               </div>
                             </div>
                             
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.03)', padding: '0.15rem 0.4rem', borderRadius: '4px', border: '1px solid var(--border-color)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.03)', padding: '0.2rem 0.55rem', borderRadius: '6px', border: '1px solid var(--border-color)', fontWeight: 600 }}>
                                 {isExpanded ? 'Collapse' : 'Expand'}
                               </span>
                             </div>
@@ -5295,52 +5804,56 @@ function App() {
 
                           {/* Message Body */}
                           {isExpanded && (
-                            <div style={{ padding: '1.25rem', backgroundColor: 'rgba(255,255,255,0.005)' }}>
+                            <div style={{ padding: '1.25rem', backgroundColor: '#ffffff' }}>
                               {/* Headers Details Block */}
-                              {(msg.to || msg.cc || msg.subject) && (
+                              {(msg.to || msg.cc || msg.subject || (idx === 0 && detailedEmail.to_details)) && (
                                 <div style={{ 
                                   fontSize: '0.78rem', 
                                   color: 'var(--text-muted)', 
+                                  backgroundColor: '#f8fafc',
+                                  padding: '0.6rem 0.85rem',
+                                  borderRadius: '6px',
+                                  border: '1px solid #e2e8f0',
                                   display: 'flex', 
                                   flexDirection: 'column', 
                                   gap: '0.25rem', 
-                                  marginBottom: '1rem',
-                                  paddingBottom: '0.75rem',
-                                  borderBottom: '1px dashed var(--border-color)'
+                                  marginBottom: '1rem'
                                 }}>
-                                  {msg.subject && <div><strong>Subject:</strong> <span style={{ color: 'var(--text-main)' }}>{msg.subject}</span></div>}
-                                  {msg.to && <div><strong>Receiver:</strong> {msg.to}</div>}
-                                  {msg.cc && <div><strong>Cc:</strong> {msg.cc}</div>}
+                                  {(msg.subject || (idx === 0 && detailedEmail.subject)) && <div><strong style={{ color: 'var(--text-main)' }}>Subject:</strong> {msg.subject || detailedEmail.subject}</div>}
+                                  {(msg.to || (idx === 0 && detailedEmail.to_details)) && <div><strong style={{ color: 'var(--text-main)' }}>Receiver:</strong> {msg.to || detailedEmail.to_details}</div>}
+                                  {(msg.cc || (idx === 0 && detailedEmail.cc_details)) && <div><strong style={{ color: 'var(--text-main)' }}>Cc:</strong> {msg.cc || detailedEmail.cc_details}</div>}
                                 </div>
                               )}
 
                               {/* Message Content */}
                               {(() => {
-                                // Extract any CSS blocks from the message body
-                                const { css, cleanText } = extractCssFromText(msg.body);
+                                let rawMsgText = msg.body || msg.text || '';
+                                let msgText = rawMsgText.replace(/^--- Message \d+ From:.*?---\s*/gi, '').trim();
+                                msgText = msgText.replace(/(\r?\n){3,}/g, '\n\n');
+
+                                const { css, cleanText } = extractCssFromText(msgText);
+                                const lower = cleanText.toLowerCase();
                                 
-                                // Check if there is rich content (HTML or extracted CSS)
                                 const hasHtml = cleanText && (
-                                  cleanText.includes('<html') || 
-                                  cleanText.includes('<div') || 
-                                  cleanText.includes('<p') || 
-                                  cleanText.includes('<span') ||
-                                  cleanText.includes('<table') ||
-                                  cleanText.includes('<body') || 
-                                  cleanText.includes('<!DOCTYPE html') ||
+                                  lower.includes('<html') || 
+                                  lower.includes('<div') || 
+                                  lower.includes('<p') || 
+                                  lower.includes('<span') ||
+                                  lower.includes('<table') ||
+                                  lower.includes('<body') || 
+                                  lower.includes('<br') || 
+                                  lower.includes('<a ') ||
+                                  lower.includes('<!doctype html') ||
                                   /<[a-z][\s\S]*>/i.test(cleanText)
                                 );
 
                                 const hasCss = css.trim().length > 0;
 
                                 if (hasHtml || hasCss) {
-                                  // Prepare the body content
-                                  // If the clean text has HTML, we render it directly
-                                  // Otherwise, we wrap it in a pre-wrap div to preserve line breaks
-                                  const bodyContent = hasHtml ? cleanText : `<div style="white-space: pre-wrap;">${cleanText}</div>`;
+                                  const bodyContent = hasHtml ? cleanText : `<div style="white-space: pre-wrap; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.65;">${cleanText}</div>`;
                                   
                                   return (
-                                    <div style={{ border: '1px solid var(--border-color)', borderRadius: '8px', overflow: 'hidden', backgroundColor: '#ffffff' }}>
+                                    <div style={{ border: '1px solid #cbd5e1', borderRadius: '8px', overflow: 'hidden', backgroundColor: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.03)' }}>
                                       <iframe
                                         title={`Message Content ${idx}`}
                                         srcDoc={`
@@ -5352,11 +5865,16 @@ function App() {
                                                 body {
                                                   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
                                                   font-size: 14px;
-                                                  line-height: 1.6;
-                                                  color: #333333;
-                                                  margin: 1rem;
+                                                  line-height: 1.65;
+                                                  color: #1e293b;
+                                                  margin: 1.1rem;
                                                   word-wrap: break-word;
                                                 }
+                                                img { max-width: 100%; height: auto; }
+                                                table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; }
+                                                th, td { border: 1px solid #cbd5e1; padding: 6px 10px; font-size: 13px; text-align: left; }
+                                                th { background-color: #f1f5f9; font-weight: 700; }
+                                                a { color: #2563eb; text-decoration: underline; }
                                                 ${css}
                                               </style>
                                             </head>
@@ -5365,27 +5883,37 @@ function App() {
                                             </body>
                                           </html>
                                         `}
-                                        style={{ width: '100%', height: '350px', border: 'none', display: 'block', background: '#ffffff' }}
+                                        style={{ width: '100%', height: '360px', border: 'none', display: 'block', background: '#ffffff' }}
                                         sandbox="allow-popups"
                                       />
                                     </div>
                                   );
-                                } else {
-                                  return (
-                                    <div 
-                                      style={{ 
-                                        whiteSpace: 'pre-wrap', 
-                                        fontFamily: 'var(--font-body)', 
-                                        fontSize: '0.88rem', 
-                                        lineHeight: '1.65', 
-                                        color: 'var(--text-main)',
-                                        wordBreak: 'break-word'
-                                      }}
-                                    >
-                                      {msg.body}
-                                    </div>
-                                  );
                                 }
+
+                                const isTabular = lower.includes('sl ') || lower.includes('uom') || lower.includes('qty') || lower.includes('discount') || lower.includes('rate') || lower.includes('make') || /^\s*\d+\s+[a-z]/im.test(cleanText);
+                                const formattedText = autoFormatUnstructuredText(msgText);
+
+                                return (
+                                  <div 
+                                    style={{ 
+                                      whiteSpace: 'pre-wrap', 
+                                      fontFamily: isTabular ? 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace' : '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', 
+                                      fontSize: isTabular ? '0.84rem' : '0.88rem', 
+                                      lineHeight: '1.7', 
+                                      color: '#0f172a',
+                                      wordBreak: 'break-word',
+                                      backgroundColor: '#f8fafc',
+                                      padding: '1rem 1.15rem',
+                                      borderRadius: '8px',
+                                      border: '1px solid #cbd5e1',
+                                      maxHeight: '450px',
+                                      overflowY: 'auto',
+                                      letterSpacing: isTabular ? '-0.15px' : 'normal'
+                                    }}
+                                  >
+                                    {formattedText}
+                                  </div>
+                                );
                               })()}
                             </div>
                           )}
@@ -5394,36 +5922,120 @@ function App() {
                     })}
                   </div>
                 ) : (
-                  /* Standard / Raw rendering (iframe for HTML, pre for plain text) */
-                  <div style={{ border: '1px solid var(--border-color)', borderRadius: '8px', overflow: 'hidden', backgroundColor: '#ffffff' }}>
-                    {detailedEmail.body && (detailedEmail.body.includes('<html') || detailedEmail.body.includes('<div') || detailedEmail.body.includes('<p') || detailedEmail.body.includes('<body') || detailedEmail.body.includes('<!DOCTYPE html')) ? (
-                      <iframe
-                        title="Rich Email Content"
-                        srcDoc={detailedEmail.body}
-                        style={{ width: '100%', height: '400px', border: 'none', display: 'block', background: '#ffffff' }}
-                        sandbox="allow-popups"
-                      />
-                    ) : (
-                      <pre
-                        style={{
-                          padding: '1.5rem',
-                          margin: 0,
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-word',
-                          fontFamily: 'Consolas, Monaco, monospace',
-                          fontSize: '0.9rem',
-                          backgroundColor: '#ffffff',
-                          color: '#333333',
-                          maxHeight: '400px',
-                          overflowY: 'auto'
-                        }}
-                      >
-                        {detailedEmail.body}
-                      </pre>
-                    )}
-                  </div>
+                  /* Standard / Raw View rendering with HTML & CSS Extractor */
+                  (() => {
+                    const bodyText = detailedEmail.body || '';
+                    if (!bodyText.trim()) {
+                      return <div style={{ padding: '1.5rem', color: '#64748b', fontStyle: 'italic' }}>No message content available.</div>;
+                    }
+
+                    const { css, cleanText } = extractCssFromText(bodyText);
+                    const lower = cleanText.toLowerCase();
+
+                    const hasHtml = (
+                      lower.includes('<html') ||
+                      lower.includes('<div') ||
+                      lower.includes('<p') ||
+                      lower.includes('<span') ||
+                      lower.includes('<table') ||
+                      lower.includes('<body') ||
+                      lower.includes('<br') ||
+                      lower.includes('<a ') ||
+                      lower.includes('<!doctype html') ||
+                      /<[a-z][\s\S]*>/i.test(cleanText)
+                    );
+
+                    const hasCss = css.trim().length > 0;
+
+                    if (hasHtml || hasCss) {
+                      const bodyContent = hasHtml ? cleanText : `<div style="white-space: pre-wrap; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.6;">${cleanText}</div>`;
+                      return (
+                        <div style={{ border: '1px solid #cbd5e1', borderRadius: '10px', overflow: 'hidden', backgroundColor: '#ffffff', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
+                          <iframe
+                            title="Rich Email Content"
+                            srcDoc={`
+                              <!DOCTYPE html>
+                              <html>
+                                <head>
+                                  <meta charset="utf-8">
+                                  <meta name="viewport" content="width=device-width, initial-scale=1">
+                                  <style>
+                                    body {
+                                      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                                      font-size: 14px;
+                                      line-height: 1.6;
+                                      color: #1e293b;
+                                      margin: 1.2rem;
+                                      word-wrap: break-word;
+                                      background-color: #ffffff;
+                                    }
+                                    img { max-width: 100%; height: auto; }
+                                    table { border-collapse: collapse; max-width: 100%; }
+                                    a { color: #2563eb; text-decoration: underline; }
+                                    ${css}
+                                  </style>
+                                </head>
+                                <body>
+                                  ${bodyContent}
+                                </body>
+                              </html>
+                            `}
+                            style={{ width: '100%', height: '520px', border: 'none', display: 'block', background: '#ffffff' }}
+                            sandbox="allow-popups"
+                          />
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div style={{ border: '1px solid #cbd5e1', borderRadius: '10px', padding: '1.25rem', backgroundColor: '#ffffff', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', fontSize: '0.9rem', lineHeight: '1.65', color: '#1e293b', maxHeight: '520px', overflowY: 'auto' }}>
+                        {bodyText}
+                      </div>
+                    );
+                  })()
                 )}
               </div>
+
+              {/* Extracted Email Links Section */}
+              {(() => {
+                const links = extractEmailLinks(detailedEmail);
+                if (!links || links.length === 0) return null;
+
+                return (
+                  <div style={{ backgroundColor: '#ffffff', borderRadius: '10px', border: '1px solid #e2e8f0', padding: '1.15rem', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                      <div style={{ fontSize: '0.85rem', color: '#0f172a', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <ExternalLink size={15} color="#2563eb" />
+                        🔗 Extracted Email Links ({links.length})
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '220px', overflowY: 'auto' }}>
+                      {links.map((item, idx) => (
+                        <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', backgroundColor: '#f8fafc', padding: '0.45rem 0.75rem', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0, flex: 1 }}>
+                            <span style={{ fontSize: '0.68rem', fontWeight: 700, color: '#1d4ed8', backgroundColor: '#eff6ff', border: '1px solid #bfdbfe', padding: '0.1rem 0.4rem', borderRadius: '4px', textTransform: 'lowercase', flexShrink: 0 }}>
+                              {item.domain}
+                            </span>
+                            <a href={item.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.78rem', color: '#2563eb', textDecoration: 'none', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.url}>
+                              {item.url}
+                            </a>
+                          </div>
+                          <button
+                            style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', borderRadius: '4px', border: '1px solid #cbd5e1', backgroundColor: '#ffffff', color: copyFeedbackIdx === `inspector_${idx}` ? '#15803d' : '#475569', cursor: 'pointer', fontWeight: 600, flexShrink: 0 }}
+                            onClick={() => {
+                              navigator.clipboard.writeText(item.url);
+                              setCopyFeedbackIdx(`inspector_${idx}`);
+                              setTimeout(() => setCopyFeedbackIdx(null), 2000);
+                            }}
+                          >
+                            {copyFeedbackIdx === `inspector_${idx}` ? '✓ Copied' : '📋 Copy'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Attachments Section */}
               {detailedEmail.attach_names ? (
