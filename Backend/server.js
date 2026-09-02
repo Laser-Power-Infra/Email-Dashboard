@@ -3499,35 +3499,7 @@ app.get('/api/all-emails', async (req, res) => {
       });
     }
 
-    // Asynchronously classify any 'General' or uncategorized emails on this page (Sales/Legal only)
-    const uncategorized = processedRows.filter(e => !e.category || e.category === 'General' || !e.sub_category);
-    if (uncategorized.length > 0) {
-      (async () => {
-        let backgroundConn;
-        try {
-          backgroundConn = await getDbConnection();
-          const subset = uncategorized.slice(0, 5);
-          for (const email of subset) {
-            const aiResult = await getEmailAiClassification(email.subject, email.body);
-            if (aiResult) {
-              const category = aiResult.category.trim();
-              const isSalesOrLegal = category.toLowerCase() === 'sales' || category.toLowerCase() === 'legal';
-              if (isSalesOrLegal) {
-                console.log(`[Background Explorer Category] ID ${email.id} -> Category: "${category}", Sub-Category: "${aiResult.sub_category}"`);
-                await backgroundConn.execute(
-                  `UPDATE \`${table}\` SET category = ?, sub_category = ? WHERE id = ?`,
-                  [category, aiResult.sub_category || '', email.id]
-                );
-              }
-            }
-          }
-        } catch (bgErr) {
-          console.error('[Background Page Classification Failed]', bgErr.message);
-        } finally {
-          if (backgroundConn) releaseDbConnection(backgroundConn);
-        }
-      })();
-    }
+    // Categorization is strictly deterministic rule-based (no AI category overrides)
 
     res.json({
       success: true,
