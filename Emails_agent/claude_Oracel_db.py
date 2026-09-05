@@ -55,8 +55,9 @@ from googleapiclient.http import MediaIoBaseUpload
 # -----------------------------------------------------------------------
 # MODULE-LEVEL CONSTANTS  (FIX 11)
 # -----------------------------------------------------------------------
-BODY_MAX_CHARS = 100_000
-OCR_MAX_CHARS  = 200_000
+BODY_MAX_CHARS        = 100_000
+OCR_MAX_CHARS         = 200_000
+POLL_INTERVAL_SECONDS = 60
 
 # -----------------------------------------------------------------------
 # PROCESS POOL  (FIX 4 + 5)
@@ -1891,8 +1892,8 @@ def run_continuous():
             logger.info(f"Cumulative important: {total_important}")
 
             batch_number += 1
-            logger.info("Checking for new incoming emails in 15s...")
-            time.sleep(15)
+            logger.info(f"Checking for new incoming emails in {POLL_INTERVAL_SECONDS}s (1 minute)...")
+            time.sleep(POLL_INTERVAL_SECONDS)
 
         except KeyboardInterrupt:
             logger.info(f"\nInterrupted. Total important so far: {total_important}")
