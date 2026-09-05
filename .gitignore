@@ -14,6 +14,8 @@ __pycache__/
 credentials.json
 token.json
 token.pickle
+temp
+temp.*
 Emails_agent/credentials.json
 Emails_agent/token.json
 Backend/credentials.json
