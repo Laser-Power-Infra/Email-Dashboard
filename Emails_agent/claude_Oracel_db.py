@@ -1566,6 +1566,48 @@ def process_gmail_batch(
                 logger.warning(f"No messages in thread {thread_id}")
                 continue
 
+            # Quick Blacklist Check BEFORE downloading full message payloads
+            latest_msg_summary = messages[-1]
+            quick_headers = get_message_headers(latest_msg_summary)
+            quick_from = (quick_headers.get("from", "") or "").lower()
+            quick_subject = quick_headers.get("subject", "")
+            quick_date = quick_headers.get("date", "")
+
+            if "automation@app.smartsheet.com" in quick_from:
+                logger.info(f"  [Skipped Blacklisted Sender] {quick_headers.get('from', '')} - Subject: {quick_subject[:60]}")
+                current_msg_ids = [m.get("id") for m in messages if m.get("id")]
+                row_data = {
+                    "thread_id":          thread_id,
+                    "related_ids":        "[None]",
+                    "msg_count":          len(messages),
+                    "date":               parse_email_date(quick_date),
+                    "sender":             quick_headers.get("from", ""),
+                    "sender_details":     quick_headers.get("from", ""),
+                    "to_details":         "[Blacklisted]",
+                    "cc_details":         "[Blacklisted]",
+                    "subject":            quick_subject,
+                    "body":               "[Skipped Blacklisted Sender]",
+                    "attach_names":       "[No Attachments]",
+                    "attach_links":       "[No Links]",
+                    "ocr_text":           "",
+                    "ai_summary":         "[Blacklisted Sender]",
+                    "category":           "Blacklisted",
+                    "sub_category":       "Blacklisted",
+                    "company":            "Blacklisted",
+                    "priority":           "low",
+                    "is_important":       False,
+                    "importance_reasons": "Blacklisted sender",
+                    "contacts":           "[Not analyzed]",
+                    "footprint":          "[Not analyzed]",
+                    "message_ids":        ",".join(current_msg_ids),
+                    "history_ids":        thread_id,
+                    "latest_history_id":  thread_summary.get("historyId", ""),
+                    "drive_folder_id":    None,
+                }
+                upsert_thread(db_conn, row_data, existing_rows.get(thread_id))
+                skipped_count += 1
+                continue
+
             msg_datas = [get_message_data(gmail_service, m["id"]) for m in messages]
             msg_datas = [md for md in msg_datas if md and isinstance(md, dict) and md.get("id")]
             if not msg_datas:
@@ -1610,41 +1652,6 @@ def process_gmail_batch(
             date_str   = headers.get("date", "")
             from_field = headers.get("from", "")
             subject    = headers.get("subject", "")
-
-            from_field_lower = (from_field or "").lower()
-            if "automation@app.smartsheet.com" in from_field_lower:
-                logger.info(f"  [Skipped Blacklisted Sender] {from_field} - Subject: {subject[:60]}")
-                row_data = {
-                    "thread_id":          thread_id,
-                    "related_ids":        "[None]",
-                    "msg_count":          len(msg_datas),
-                    "date":               parse_email_date(date_str),
-                    "sender":             from_field,
-                    "sender_details":     from_field,
-                    "to_details":         "[Blacklisted]",
-                    "cc_details":         "[Blacklisted]",
-                    "subject":            subject,
-                    "body":               "[Skipped Blacklisted Sender]",
-                    "attach_names":       "[No Attachments]",
-                    "attach_links":       "[No Links]",
-                    "ocr_text":           "",
-                    "ai_summary":         "[Blacklisted Sender]",
-                    "category":           "Blacklisted",
-                    "sub_category":       "Blacklisted",
-                    "company":            "Blacklisted",
-                    "priority":           "low",
-                    "is_important":       False,
-                    "importance_reasons": "Blacklisted sender",
-                    "contacts":           "[Not analyzed]",
-                    "footprint":          "[Not analyzed]",
-                    "message_ids":        ",".join(current_msg_ids),
-                    "history_ids":        ",".join(current_history_ids),
-                    "latest_history_id":  current_latest_history_id,
-                    "drive_folder_id":    None,
-                }
-                upsert_thread(db_conn, row_data, existing_rows.get(thread_id))
-                skipped_count += 1
-                continue
 
             cc_emails: Set[str] = set()   # FIX 12: bare email dedup
             to_emails: Set[str] = set()
