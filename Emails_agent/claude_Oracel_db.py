@@ -1616,8 +1616,11 @@ def process_gmail_batch(
                 logger.info(f"  [Skipped Blacklisted Sender] {from_field} - Subject: {subject[:60]}")
                 row_data = {
                     "thread_id":          thread_id,
-                    "date_received":      parse_email_date(date_str),
+                    "related_ids":        "[None]",
+                    "msg_count":          len(msg_datas),
+                    "date":               parse_email_date(date_str),
                     "sender":             from_field,
+                    "sender_details":     from_field,
                     "to_details":         "[Blacklisted]",
                     "cc_details":         "[Blacklisted]",
                     "subject":            subject,
