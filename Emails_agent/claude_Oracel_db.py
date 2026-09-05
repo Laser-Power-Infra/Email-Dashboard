@@ -1589,6 +1589,33 @@ def process_gmail_batch(
             from_field_lower = (from_field or "").lower()
             if "automation@app.smartsheet.com" in from_field_lower:
                 logger.info(f"  [Skipped Blacklisted Sender] {from_field} - Subject: {subject[:60]}")
+                row_data = {
+                    "thread_id":          thread_id,
+                    "date_received":      parse_email_date(date_str),
+                    "sender":             from_field,
+                    "to_details":         "[Blacklisted]",
+                    "cc_details":         "[Blacklisted]",
+                    "subject":            subject,
+                    "body":               "[Skipped Blacklisted Sender]",
+                    "attach_names":       "[No Attachments]",
+                    "attach_links":       "[No Links]",
+                    "ocr_text":           "",
+                    "ai_summary":         "[Blacklisted Sender]",
+                    "category":           "Blacklisted",
+                    "sub_category":       "Blacklisted",
+                    "company":            "Blacklisted",
+                    "priority":           "low",
+                    "is_important":       False,
+                    "importance_reasons": "Blacklisted sender",
+                    "contacts":           "[Not analyzed]",
+                    "footprint":          "[Not analyzed]",
+                    "message_ids":        ",".join(current_msg_ids),
+                    "history_ids":        ",".join(current_history_ids),
+                    "latest_history_id":  current_latest_history_id,
+                    "drive_folder_id":    None,
+                }
+                upsert_thread(db_conn, row_data, existing_rows.get(thread_id))
+                skipped_count += 1
                 continue
 
             cc_emails: Set[str] = set()   # FIX 12: bare email dedup
