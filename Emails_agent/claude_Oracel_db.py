@@ -35,6 +35,7 @@ import os
 import re
 import sys
 import time
+import random
 import hashlib
 import tempfile
 import subprocess
@@ -632,21 +633,41 @@ def search_threads(gmail_service, query: str) -> List[dict]:
     return threads
 
 def get_thread_messages(gmail_service, thread_id: str) -> List[dict]:
-    try:
-        thread = gmail_service.users().threads().get(userId="me", id=thread_id).execute()
-        return thread.get("messages", [])
-    except Exception as e:
-        logger.error(f"Failed to get thread {thread_id}: {e}")
-        return []
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            thread = gmail_service.users().threads().get(userId="me", id=thread_id).execute()
+            return thread.get("messages", [])
+        except Exception as e:
+            err_str = str(e)
+            if ("rateLimitExceeded" in err_str or "userRateLimitExceeded" in err_str or 
+                "403" in err_str or "429" in err_str or "500" in err_str or "503" in err_str) and attempt < max_retries - 1:
+                wait_time = (2 ** attempt) + (random.randint(1, 1000) / 1000.0)
+                logger.warning(f"Encountered rate limit/error getting thread {thread_id}. Retrying in {wait_time:.2f}s (attempt {attempt+1}/{max_retries})...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"Failed to get thread {thread_id}: {e}")
+                return []
+    return []
 
 def get_message_data(gmail_service, message_id: str) -> dict:
-    try:
-        return gmail_service.users().messages().get(
-            userId="me", id=message_id, format="full"
-        ).execute()
-    except Exception as e:
-        logger.error(f"Failed to get message {message_id}: {e}")
-        return {"payload": {"headers": [], "body": {}}}
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            return gmail_service.users().messages().get(
+                userId="me", id=message_id, format="full"
+            ).execute()
+        except Exception as e:
+            err_str = str(e)
+            if ("rateLimitExceeded" in err_str or "userRateLimitExceeded" in err_str or 
+                "403" in err_str or "429" in err_str or "500" in err_str or "503" in err_str) and attempt < max_retries - 1:
+                wait_time = (2 ** attempt) + (random.randint(1, 1000) / 1000.0)
+                logger.warning(f"Encountered rate limit/error getting message {message_id}. Retrying in {wait_time:.2f}s (attempt {attempt+1}/{max_retries})...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"Failed to get message {message_id}: {e}")
+                return {"id": message_id, "payload": {"headers": [], "body": {}}}
+    return {"id": message_id, "payload": {"headers": [], "body": {}}}
 
 def get_latest_history_id_from_messages(messages: List[dict]) -> Optional[str]:
     latest = 0
@@ -1546,6 +1567,10 @@ def process_gmail_batch(
                 continue
 
             msg_datas = [get_message_data(gmail_service, m["id"]) for m in messages]
+            msg_datas = [md for md in msg_datas if md and isinstance(md, dict) and md.get("id")]
+            if not msg_datas:
+                logger.warning(f"No valid message payloads returned for thread {thread_id}")
+                continue
 
             current_msg_ids     = {md["id"] for md in msg_datas}
             current_history_ids = set()
