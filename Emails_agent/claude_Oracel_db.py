@@ -709,8 +709,15 @@ def get_gmail_label_map(gmail_service) -> Dict[str, str]:
         logger.warning(f"Could not load Gmail label definitions: {e}")
         return {}
 
+GMAIL_SYSTEM_LABELS = {
+    'INBOX', 'UNREAD', 'IMPORTANT', 'STARRED', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'CHAT',
+    'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS',
+    'Inbox', 'Unread', 'Important', 'Starred', 'Sent', 'Draft', 'Spam', 'Trash', 'Chat',
+    'Personal', 'Social', 'Promotions', 'Updates', 'Forums'
+}
+
 def extract_gmail_labels(messages_list: List[dict], gmail_service=None) -> str:
-    """Extracts exact Gmail labels set on the thread messages directly from Gmail API."""
+    """Extracts ONLY custom user-defined Gmail labels set on the thread messages into a comma-separated string."""
     labels = set()
     label_map = get_gmail_label_map(gmail_service) if gmail_service else {}
     for msg in messages_list:
@@ -719,7 +726,11 @@ def extract_gmail_labels(messages_list: List[dict], gmail_service=None) -> str:
         lbl_ids = msg.get("labelIds", [])
         if isinstance(lbl_ids, list):
             for l in lbl_ids:
+                if l in GMAIL_SYSTEM_LABELS or l.startswith("CATEGORY_"):
+                    continue
                 label_name = label_map.get(l) or l
+                if label_name in GMAIL_SYSTEM_LABELS or label_name.startswith("CATEGORY_"):
+                    continue
                 labels.add(label_name)
     return ", ".join(sorted(labels)) if labels else "[None]"
 
