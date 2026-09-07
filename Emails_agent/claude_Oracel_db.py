@@ -1242,6 +1242,29 @@ def extract_bare_emails(raw_cc: Optional[str]) -> Set[str]:
         return set()
     return set(m.lower() for m in _EMAIL_RE.findall(raw_cc))
 
+def auto_register_laserpower_emails(db_conn, email_map: Dict[str, Tuple[str, str, str]], emails: Iterable[str]):
+    """Automatically registers any email address containing 'laserpower' or 'laserpowerinfra' 
+    into the `all_email` database table if not already present."""
+    if not emails or not db_conn:
+        return
+    for em in emails:
+        clean_email = em.lower().strip()
+        if not clean_email or "@" not in clean_email:
+            continue
+        if ("laserpower" in clean_email or "laserpowerinfra" in clean_email) and clean_email not in email_map:
+            try:
+                cursor = db_conn.cursor()
+                cursor.execute(
+                    "INSERT INTO all_email (NAME, COMPANY, CATEGORY, SUB_CATEGORY) VALUES (%s, %s, %s, %s)",
+                    (clean_email, "laser", "INTERNAL", "AUTO_ADDED")
+                )
+                db_conn.commit()
+                cursor.close()
+                email_map[clean_email] = ("laser", "INTERNAL", "AUTO_ADDED")
+                logger.info(f"  [Auto-Registered New Laserpower Email] {clean_email}")
+            except Exception as e:
+                logger.error(f"Failed to auto-register laserpower email {clean_email}: {e}")
+
 def load_all_email_mapping(db_conn) -> Dict[str, Tuple[str, str, str]]:
     """Load all_email table into a dict keyed by lowercased email.
     Returns {email: (company, category, sub_category), ...}."""
@@ -1574,7 +1597,10 @@ def process_gmail_batch(
             quick_subject = quick_headers.get("subject", "")
             quick_date = quick_headers.get("date", "")
 
-            if "automation@app.smartsheet.com" in quick_from:
+            # Exclude puja.agarwal emails from blacklisting
+            is_puja_agarwal = "puja.agarwal" in quick_from or "puja" in quick_from or "puja.agarwal" in quick_subject.lower()
+
+            if "automation@app.smartsheet.com" in quick_from and not is_puja_agarwal:
                 logger.info(f"  [Skipped Blacklisted Sender] {quick_headers.get('from', '')} - Subject: {quick_subject[:60]}")
                 current_msg_ids = [m.get("id") for m in messages if m.get("id")]
                 row_data = {
@@ -1679,6 +1705,11 @@ def process_gmail_batch(
             is_important, importance_reasons = determine_importance(
                 subject, body_content, from_field, all_attachment_names
             )
+
+            # Auto-register any new laserpower/laserpowerinfra emails to DB + memory map
+            sender_emails_extracted = set(extract_bare_emails(from_field or ""))
+            all_thread_emails = set(to_emails) | set(cc_emails) | sender_emails_extracted
+            auto_register_laserpower_emails(db_conn, email_map, all_thread_emails)
 
             # Company lookup: Check To + CC (all internal = INTERNAL), mapped external, or sender fallback
             company, category, sub_category = resolve_company_category(
