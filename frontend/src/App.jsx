@@ -2118,7 +2118,7 @@ function App() {
       email.companies.forEach(c => items.push({ label: c.toUpperCase(), color: COMPANY_COLORS[c] || COMPANY_COLORS[c.toUpperCase()] || '#6b7280', type: 'company' }));
     } else if (email.fallback_company) {
       const fc = email.fallback_company;
-      items.push({ label: `${fc.toUpperCase()} (TEMP)`, color: COMPANY_COLORS[fc] || '#f59e0b', type: 'temp' });
+      items.push({ label: fc.toUpperCase(), color: COMPANY_COLORS[fc] || COMPANY_COLORS[fc.toUpperCase()] || '#6366f1', type: 'company' });
     } else {
       items.push({ label: 'OUTSIDER', color: '#6b7280', type: 'outsider' });
     }
@@ -5510,8 +5510,8 @@ function App() {
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '0.2rem' }}>
                   ID: {detailedEmail.thread_id || detailedEmail.id} | Category: <span className="badge badge-info">{detailedEmail.category || 'General'}</span>
                   {detailedEmail.is_fallback_company && detailedEmail.fallback_company && (
-                    <span style={{ marginLeft: '0.75rem', color: '#f59e0b' }}>
-                      | <strong>Fallback company:</strong> {detailedEmail.fallback_company} (TEMP — unverified)
+                    <span style={{ marginLeft: '0.75rem', color: '#6366f1' }}>
+                      | <strong>Company:</strong> {detailedEmail.fallback_company}
                     </span>
                   )}
                   {detailedEmail.to_details && (
