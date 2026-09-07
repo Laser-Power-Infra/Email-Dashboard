@@ -295,6 +295,13 @@ function App() {
   });
 
   const CATEGORY_COLORS = new Proxy({
+    'DOM Client': '#3b82f6',
+    'EXP Client': '#06b6d4',
+    'Capital Supplyer': '#f59e0b',
+    'MISC Supplyer': '#8b5cf6',
+    'RM': '#ec4899',
+    'Logistic Head': '#f43f5e',
+    'Service / Job workers': '#14b8a6',
     'Banking & Finance': '#10b981',
     'Legal': '#ef4444',
     'Sales': '#f59e0b',
@@ -303,12 +310,8 @@ function App() {
     'Promotions': '#ec4899',
     'General': '#6b7280',
     'ADMIN': '#3b82f6',
-    'AGENT/BROKER': '#6366f1',
-    'CONSIGNEE': '#ec4899',
     'INTER COMPANY': '#8b5cf6',
     'INTERNAL': '#84cc16',
-    'STAFF': '#d946ef',
-    'TRANSPORTERS': '#f43f5e'
   }, {
     get: (target, name) => {
       if (typeof name !== 'string') return target[name];
