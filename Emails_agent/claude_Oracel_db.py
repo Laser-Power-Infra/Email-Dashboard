@@ -682,6 +682,47 @@ def get_latest_history_id_from_messages(messages: List[dict]) -> Optional[str]:
             continue
     return str(latest) if latest else None
 
+_GMAIL_USER_LABELS_CACHE: Dict[str, str] = {}
+
+def get_gmail_label_map(gmail_service) -> Dict[str, str]:
+    """Fetches and caches all user label definitions directly from Gmail API."""
+    global _GMAIL_USER_LABELS_CACHE
+    if _GMAIL_USER_LABELS_CACHE:
+        return _GMAIL_USER_LABELS_CACHE
+    if not gmail_service:
+        return {}
+    try:
+        res = gmail_service.users().labels().list(userId="me").execute()
+        labels = res.get("labels", [])
+        m = {}
+        for l in labels:
+            lid = l.get("id")
+            lname = l.get("name", "")
+            if lid and lname:
+                if lname.startswith("LABELS/"):
+                    lname = lname[7:]
+                m[lid] = lname
+        _GMAIL_USER_LABELS_CACHE = m
+        logger.info(f"Loaded {len(m)} user label definitions from Gmail API.")
+        return m
+    except Exception as e:
+        logger.warning(f"Could not load Gmail label definitions: {e}")
+        return {}
+
+def extract_gmail_labels(messages_list: List[dict], gmail_service=None) -> str:
+    """Extracts exact Gmail labels set on the thread messages directly from Gmail API."""
+    labels = set()
+    label_map = get_gmail_label_map(gmail_service) if gmail_service else {}
+    for msg in messages_list:
+        if not isinstance(msg, dict):
+            continue
+        lbl_ids = msg.get("labelIds", [])
+        if isinstance(lbl_ids, list):
+            for l in lbl_ids:
+                label_name = label_map.get(l) or l
+                labels.add(label_name)
+    return ", ".join(sorted(labels)) if labels else "[None]"
+
 def thread_has_changed_since(
     gmail_service, thread_id: str, start_history_id: str
 ) -> Optional[bool]:
@@ -1656,6 +1697,7 @@ def process_gmail_batch(
                     "history_ids":        thread_id,
                     "latest_history_id":  thread_summary.get("historyId", ""),
                     "drive_folder_id":    None,
+                    "user_labels":        extract_gmail_labels(messages, gmail_service=gmail_service),
                 }
                 upsert_thread(db_conn, row_data, existing_rows.get(thread_id))
                 skipped_count += 1
@@ -1835,6 +1877,7 @@ def process_gmail_batch(
                 "history_ids":        ",".join(current_history_ids),
                 "latest_history_id":  current_latest_history_id,
                 "drive_folder_id":    thread_folder_id,
+                "user_labels":        extract_gmail_labels(msg_datas, gmail_service=gmail_service),
             }
 
             upsert_thread(db_conn, row_data, existing_rows.get(thread_id))
