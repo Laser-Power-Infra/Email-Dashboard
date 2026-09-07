@@ -363,10 +363,10 @@ function SearchableMultiSelectDropdown({ label, icon, options = [], selectedValu
           zIndex: 1000,
           minWidth: '290px',
           maxWidth: '380px',
-          backgroundColor: '#1e1b4b',
-          border: '1px solid rgba(255,255,255,0.15)',
+          backgroundColor: 'var(--bg-card, #ffffff)',
+          border: '1px solid var(--border-color, rgba(255,255,255,0.15))',
           borderRadius: '12px',
-          boxShadow: '0 12px 30px rgba(0,0,0,0.5)',
+          boxShadow: '0 12px 35px rgba(0,0,0,0.25)',
           padding: '0.75rem',
           display: 'flex',
           flexDirection: 'column',
@@ -379,7 +379,7 @@ function SearchableMultiSelectDropdown({ label, icon, options = [], selectedValu
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="sub-cat-search-box"
-              style={{ width: '100%', boxSizing: 'border-box' }}
+              style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg-main)', color: 'var(--text-main)' }}
               autoFocus
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem' }}>
@@ -390,9 +390,9 @@ function SearchableMultiSelectDropdown({ label, icon, options = [], selectedValu
                 <button
                   type="button"
                   style={{
-                    background: 'rgba(99,102,241,0.2)',
-                    border: '1px solid rgba(99,102,241,0.4)',
-                    color: '#818cf8',
+                    background: 'rgba(99,102,241,0.15)',
+                    border: '1px solid rgba(99,102,241,0.3)',
+                    color: 'var(--color-primary, #6366f1)',
                     padding: '0.2rem 0.5rem',
                     borderRadius: '4px',
                     cursor: 'pointer',
@@ -405,8 +405,8 @@ function SearchableMultiSelectDropdown({ label, icon, options = [], selectedValu
                 <button
                   type="button"
                   style={{
-                    background: 'rgba(255,255,255,0.05)',
-                    border: '1px solid rgba(255,255,255,0.1)',
+                    background: 'rgba(0,0,0,0.04)',
+                    border: '1px solid var(--border-color)',
                     color: 'var(--text-muted)',
                     padding: '0.2rem 0.5rem',
                     borderRadius: '4px',
@@ -446,7 +446,7 @@ function SearchableMultiSelectDropdown({ label, icon, options = [], selectedValu
                       padding: '0.35rem 0.5rem',
                       borderRadius: '6px',
                       cursor: 'pointer',
-                      backgroundColor: isSelected ? 'rgba(99,102,241,0.15)' : 'transparent',
+                      backgroundColor: isSelected ? 'rgba(99,102,241,0.12)' : 'transparent',
                       transition: 'background 0.15s ease'
                     }}
                     onClick={() => handleToggleOption(opt)}
@@ -459,7 +459,7 @@ function SearchableMultiSelectDropdown({ label, icon, options = [], selectedValu
                     />
                     <span style={{
                       fontSize: '0.8rem',
-                      color: isSelected ? '#ffffff' : 'var(--text-main)',
+                      color: isSelected ? 'var(--color-primary, #6366f1)' : 'var(--text-main)',
                       fontWeight: isSelected ? 600 : 400,
                       whiteSpace: 'nowrap',
                       overflow: 'hidden',
