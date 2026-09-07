@@ -162,7 +162,7 @@ _ALLOWED_THREAD_COLUMNS: Set[str] = {
     "attach_links", "ocr_text", "ai_summary", "category", "sub_category",
     "priority", "is_important", "importance_reasons", "contacts",
     "footprint", "message_ids", "history_ids", "latest_history_id",
-    "drive_folder_id", "company", "to_details",
+    "drive_folder_id", "company", "to_details", "user_labels", "codeword",
 }
 
 # -----------------------------------------------------------------------
@@ -234,6 +234,8 @@ def init_db():
             ("footprint",           "LONGTEXT"),
             ("company",             "VARCHAR(500) DEFAULT NULL"),
             ("to_details",          "TEXT"),
+            ("user_labels",         "TEXT"),
+            ("codeword",            "VARCHAR(255)"),
         ]
         for col_name, col_type in new_columns:
             try:
