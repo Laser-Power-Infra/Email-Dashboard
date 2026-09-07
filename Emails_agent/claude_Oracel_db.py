@@ -1459,10 +1459,13 @@ def resolve_company_category(
             em = e.lower().strip()
             domain = em.split('@')[-1] if '@' in em else ''
             if domain and domain not in _INTERNAL_DOMAINS and domain not in _COMMON_DOMAINS:
-                for mapped_email, mapped_val in email_map.items():
+                # Fast domain check via domain prefix/match in email_map
+                for mapped_email in email_map:
                     if domain in mapped_email:
+                        mapped_val = email_map[mapped_email]
                         if mapped_val[1] and mapped_val[1].strip().lower() != _INTERNAL_CATEGORY:
                             return mapped_val
+                        break
 
         # Check if any participant belongs to an internal company
         for e in sorted(all_participants):
