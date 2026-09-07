@@ -1468,11 +1468,11 @@ def resolve_company_category(
         for e in sorted(all_participants):
             comp = _get_participant_company(e, email_map)
             if comp:
-                return (comp, "OUTSIDER", "OUTSIDER")
+                return (comp, "Undefined", "Undefined")
 
-        return ("Outsider", "Outsider", "Outsider")
+        return ("Outsider", "Undefined", "Undefined")
 
-    return ("Outsider", "Outsider", "Outsider")
+    return ("Outsider", "Undefined", "Undefined")
 
 _HEADER_LINE_RE = re.compile(r'^(to|cc)\s*:\s*(.*)$', re.IGNORECASE)
 _ANY_HEADER_RE  = re.compile(r'^[a-z-]{1,24}\s*:', re.IGNORECASE)

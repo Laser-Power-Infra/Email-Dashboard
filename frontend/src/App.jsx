@@ -302,6 +302,7 @@ function App() {
     'RM': '#ec4899',
     'Logistic Head': '#f43f5e',
     'Service / Job workers': '#14b8a6',
+    'Undefined': '#6b7280',
     'Banking & Finance': '#10b981',
     'Legal': '#ef4444',
     'Sales': '#f59e0b',
