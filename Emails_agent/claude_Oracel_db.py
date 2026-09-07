@@ -1448,26 +1448,7 @@ def resolve_company_category(
             return ("laser", "INTERNAL", "INTERNAL")
 
         # Not all participants are internal (at least 1 external participant exists)
-        # Check exact email match for external participant
-        for e in sorted(all_participants):
-            mapped = email_map.get(e.lower().strip())
-            if mapped and mapped[1] and mapped[1].strip().lower() != _INTERNAL_CATEGORY:
-                return mapped
-
-        # Check domain match for external participant
-        for e in sorted(all_participants):
-            em = e.lower().strip()
-            domain = em.split('@')[-1] if '@' in em else ''
-            if domain and domain not in _INTERNAL_DOMAINS and domain not in _COMMON_DOMAINS:
-                # Fast domain check via domain prefix/match in email_map
-                for mapped_email in email_map:
-                    if domain in mapped_email:
-                        mapped_val = email_map[mapped_email]
-                        if mapped_val[1] and mapped_val[1].strip().lower() != _INTERNAL_CATEGORY:
-                            return mapped_val
-                        break
-
-        # Check if any participant belongs to an internal company
+        # Find company from participants
         for e in sorted(all_participants):
             comp = _get_participant_company(e, email_map)
             if comp:
