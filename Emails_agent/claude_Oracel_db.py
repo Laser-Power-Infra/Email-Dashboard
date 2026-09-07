@@ -682,6 +682,58 @@ def get_latest_history_id_from_messages(messages: List[dict]) -> Optional[str]:
             continue
     return str(latest) if latest else None
 
+_GMAIL_USER_LABELS_CACHE: Dict[str, str] = {}
+
+def get_gmail_label_map(gmail_service) -> Dict[str, str]:
+    """Fetches and caches all user label definitions directly from Gmail API."""
+    global _GMAIL_USER_LABELS_CACHE
+    if _GMAIL_USER_LABELS_CACHE:
+        return _GMAIL_USER_LABELS_CACHE
+    if not gmail_service:
+        return {}
+    try:
+        res = gmail_service.users().labels().list(userId="me").execute()
+        labels = res.get("labels", [])
+        m = {}
+        for l in labels:
+            lid = l.get("id")
+            lname = l.get("name", "")
+            if lid and lname:
+                if lname.startswith("LABELS/"):
+                    lname = lname[7:]
+                m[lid] = lname
+        _GMAIL_USER_LABELS_CACHE = m
+        logger.info(f"Loaded {len(m)} user label definitions from Gmail API.")
+        return m
+    except Exception as e:
+        logger.warning(f"Could not load Gmail label definitions: {e}")
+        return {}
+
+GMAIL_SYSTEM_LABELS = {
+    'INBOX', 'UNREAD', 'IMPORTANT', 'STARRED', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'CHAT',
+    'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS',
+    'Inbox', 'Unread', 'Important', 'Starred', 'Sent', 'Draft', 'Spam', 'Trash', 'Chat',
+    'Personal', 'Social', 'Promotions', 'Updates', 'Forums'
+}
+
+def extract_gmail_labels(messages_list: List[dict], gmail_service=None) -> str:
+    """Extracts ONLY custom user-defined Gmail labels set on the thread messages into a comma-separated string."""
+    labels = set()
+    label_map = get_gmail_label_map(gmail_service) if gmail_service else {}
+    for msg in messages_list:
+        if not isinstance(msg, dict):
+            continue
+        lbl_ids = msg.get("labelIds", [])
+        if isinstance(lbl_ids, list):
+            for l in lbl_ids:
+                if l in GMAIL_SYSTEM_LABELS or l.startswith("CATEGORY_"):
+                    continue
+                label_name = label_map.get(l) or l
+                if label_name in GMAIL_SYSTEM_LABELS or label_name.startswith("CATEGORY_"):
+                    continue
+                labels.add(label_name)
+    return ", ".join(sorted(labels)) if labels else "[None]"
+
 def thread_has_changed_since(
     gmail_service, thread_id: str, start_history_id: str
 ) -> Optional[bool]:
@@ -1242,6 +1294,55 @@ def extract_bare_emails(raw_cc: Optional[str]) -> Set[str]:
         return set()
     return set(m.lower() for m in _EMAIL_RE.findall(raw_cc))
 
+SPREADSHEET_ID_MASTER = "1dmF11NM6UOolkDsRThVIZsSzkvGnBpEALszGrrXIdsU"
+SHEET_TITLE_MASTER    = "MAIL MASTER"
+
+def sync_laserpower_email_to_gsheet(gmail_service, email: str):
+    """Appends newly auto-registered laserpower email address into Column C of Google Sheet 'MAIL MASTER'."""
+    if not gmail_service:
+        return
+    try:
+        sheets_service = build('sheets', 'v4', credentials=gmail_service._http.credentials)
+        first_part = email.split('@')[0]
+        body = {
+            "values": [[first_part, '', email, 'laser', 'INTERNAL']]
+        }
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID_MASTER,
+            range=f"'{SHEET_TITLE_MASTER}'!A:E",
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body=body
+        ).execute()
+        logger.info(f"  [Google Sheet Sync] Appended {email} to Column C of MAIL MASTER sheet")
+    except Exception as e:
+        logger.warning(f"  [Google Sheet Sync] Could not append {email} to Google Sheet: {e}")
+
+def auto_register_laserpower_emails(db_conn, email_map: Dict[str, Tuple[str, str, str]], emails: Iterable[str], gmail_service=None):
+    """Automatically registers any email address containing 'laserpower' or 'laserpowerinfra' 
+    into the `all_email` database table if not already present, and auto-populates Google Sheet."""
+    if not emails or not db_conn:
+        return
+    for em in emails:
+        clean_email = em.lower().strip()
+        if not clean_email or "@" not in clean_email:
+            continue
+        if ("laserpower" in clean_email or "laserpowerinfra" in clean_email) and clean_email not in email_map:
+            try:
+                cursor = db_conn.cursor()
+                cursor.execute(
+                    "INSERT INTO all_email (NAME, COMPANY, CATEGORY, SUB_CATEGORY) VALUES (%s, %s, %s, %s)",
+                    (clean_email, "laser", "INTERNAL", "AUTO_ADDED")
+                )
+                db_conn.commit()
+                cursor.close()
+                email_map[clean_email] = ("laser", "INTERNAL", "AUTO_ADDED")
+                logger.info(f"  [Auto-Registered New Laserpower Email] {clean_email}")
+                if gmail_service:
+                    sync_laserpower_email_to_gsheet(gmail_service, clean_email)
+            except Exception as e:
+                logger.error(f"Failed to auto-register laserpower email {clean_email}: {e}")
+
 def load_all_email_mapping(db_conn) -> Dict[str, Tuple[str, str, str]]:
     """Load all_email table into a dict keyed by lowercased email.
     Returns {email: (company, category, sub_category), ...}."""
@@ -1277,46 +1378,51 @@ def resolve_company_category(
 ) -> Tuple[str, str, str]:
     """Assign a SINGLE company + category + sub_category.
 
-    Rules:
-      1. If ALL recipients in (To + CC) are INTERNAL staff/domains, mark as INTERNAL.
-      2. If ANY recipient in (To + CC) is external:
-         a. Check if any recipient exact email is in email_map as non-internal -> use recipient's mapped company.
-         b. Check if recipient's domain matches any non-internal entry in email_map -> use domain-mapped company.
-         c. Otherwise, if external recipients exist, DO NOT fall back to an internal sender! Return ('Outsider', 'Outsider', 'Outsider').
-      3. If no recipients exist at all, fall back to Sender (From).
+    Strict Rules:
+      1. Category = 'INTERNAL' ONLY WHEN ALL participants (Sender, To, AND CC) are internal staff/domains.
+      2. If ANY participant in (Sender, To, CC) is external:
+         a. Check if any external participant's exact email is in email_map as non-internal -> use mapped company/category.
+         b. Check if domain matches any non-internal entry in email_map -> use domain-mapped company.
+         c. Otherwise return ('Outsider', 'Outsider', 'Outsider').
     """
     cc_set = set(cc_emails) if cc_emails else set()
-    all_recipients = set(to_emails) | cc_set
+    to_set = set(to_emails) if to_emails else set()
+    senders_set = set(sender_emails) if sender_emails else set()
+    all_participants = senders_set | to_set | cc_set
 
     def _is_internal_email(email_str: str) -> bool:
         em = email_str.lower().strip()
+        if not em:
+            return True
         mapped = email_map.get(em)
         if mapped and mapped[1] and mapped[1].strip().lower() == _INTERNAL_CATEGORY:
             return True
         domain = em.split('@')[-1] if '@' in em else ''
         if domain in _INTERNAL_DOMAINS:
             return True
+        if 'laserpower' in em or 'lasercables' in em:
+            return True
         return False
 
-    if all_recipients:
-        all_internal = all(_is_internal_email(e) for e in all_recipients)
+    if all_participants:
+        all_internal = all(_is_internal_email(e) for e in all_participants)
         if all_internal:
-            # 100% of recipients in To + CC are internal -> mark as INTERNAL
-            for e in sorted(all_recipients):
+            # 100% of participants (Sender, To, CC) are internal -> mark as INTERNAL
+            for e in sorted(all_participants):
                 mapped = email_map.get(e.lower().strip())
                 if mapped:
                     return mapped
-            return ("LASER", "INTERNAL", "INTERNAL")
+            return ("laser", "INTERNAL", "INTERNAL")
 
-        # NOT all recipients are internal (there are external recipients in To or CC)
-        # a) Exact email match for external recipient
-        for e in sorted(all_recipients):
+        # Not all participants are internal (at least 1 external participant exists)
+        # Check exact email match for external participant
+        for e in sorted(all_participants):
             mapped = email_map.get(e.lower().strip())
             if mapped and mapped[1] and mapped[1].strip().lower() != _INTERNAL_CATEGORY:
                 return mapped
 
-        # b) Domain match for external recipient (e.g. @siemens.com)
-        for e in sorted(all_recipients):
+        # Check domain match for external participant
+        for e in sorted(all_participants):
             em = e.lower().strip()
             domain = em.split('@')[-1] if '@' in em else ''
             if domain and domain not in _INTERNAL_DOMAINS and domain not in _COMMON_DOMAINS:
@@ -1325,14 +1431,7 @@ def resolve_company_category(
                         if mapped_val[1] and mapped_val[1].strip().lower() != _INTERNAL_CATEGORY:
                             return mapped_val
 
-        # c) External recipient exists but no company mapping found -> Outsider (NEVER return INTERNAL from sender)
         return ("Outsider", "Outsider", "Outsider")
-
-    # Fall back to Sender (From) when no recipients exist
-    for s in sorted(sender_emails):
-        mapped = email_map.get(s.lower().strip())
-        if mapped:
-            return mapped
 
     return ("Outsider", "Outsider", "Outsider")
 
@@ -1574,7 +1673,10 @@ def process_gmail_batch(
             quick_subject = quick_headers.get("subject", "")
             quick_date = quick_headers.get("date", "")
 
-            if "automation@app.smartsheet.com" in quick_from:
+            # Exclude puja.agarwal emails from blacklisting
+            is_puja_agarwal = "puja.agarwal" in quick_from or "puja" in quick_from or "puja.agarwal" in quick_subject.lower()
+
+            if "automation@app.smartsheet.com" in quick_from and not is_puja_agarwal:
                 logger.info(f"  [Skipped Blacklisted Sender] {quick_headers.get('from', '')} - Subject: {quick_subject[:60]}")
                 current_msg_ids = [m.get("id") for m in messages if m.get("id")]
                 row_data = {
@@ -1604,6 +1706,7 @@ def process_gmail_batch(
                     "history_ids":        thread_id,
                     "latest_history_id":  thread_summary.get("historyId", ""),
                     "drive_folder_id":    None,
+                    "user_labels":        extract_gmail_labels(messages, gmail_service=gmail_service),
                 }
                 upsert_thread(db_conn, row_data, existing_rows.get(thread_id))
                 skipped_count += 1
@@ -1679,6 +1782,11 @@ def process_gmail_batch(
             is_important, importance_reasons = determine_importance(
                 subject, body_content, from_field, all_attachment_names
             )
+
+            # Auto-register any new laserpower/laserpowerinfra emails to DB + memory map
+            sender_emails_extracted = set(extract_bare_emails(from_field or ""))
+            all_thread_emails = set(to_emails) | set(cc_emails) | sender_emails_extracted
+            auto_register_laserpower_emails(db_conn, email_map, all_thread_emails, gmail_service=gmail_service)
 
             # Company lookup: Check To + CC (all internal = INTERNAL), mapped external, or sender fallback
             company, category, sub_category = resolve_company_category(
@@ -1778,6 +1886,7 @@ def process_gmail_batch(
                 "history_ids":        ",".join(current_history_ids),
                 "latest_history_id":  current_latest_history_id,
                 "drive_folder_id":    thread_folder_id,
+                "user_labels":        extract_gmail_labels(msg_datas, gmail_service=gmail_service),
             }
 
             upsert_thread(db_conn, row_data, existing_rows.get(thread_id))

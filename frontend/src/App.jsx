@@ -2192,22 +2192,30 @@ function App() {
 
   const allMatchedEmails = displayMatchedEmailsCount;
 
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [subCatSearch, setSubCatSearch] = useState('');
+
   return (
     <div className="app-container">
       {/* Sidebar Navigation */}
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-icon">
-            {/* <Mail size={22} /> */}
+      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <div className="brand" style={{ justifyContent: 'space-between', width: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', overflow: 'hidden' }}>
+            <img
+              src="https://laserpowerinfra.com/wp-content/uploads/2025/09/lpi-logo.png"
+              alt="Laser Power & Infra Logo"
+              className="company-logo"
+              style={{ width: sidebarCollapsed ? "36px" : "180px", height: "auto", transition: 'all 0.3s ease' }}
+            />
           </div>
-          <img
-            src="https://laserpowerinfra.com/wp-content/uploads/2025/09/lpi-logo.png"
-            alt="Laser Power & Infra Logo"
-            className="company-logo"
-            style={{ width: "200px", height: "auto" }}
-          />
 
-          {/* <span className="brand-name">TenderPortal</span> */}
+          <button
+            className="sidebar-toggle-btn"
+            onClick={() => setSidebarCollapsed(prev => !prev)}
+            title={sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+          >
+            {sidebarCollapsed ? '➔' : '◀'}
+          </button>
         </div>
 
         <nav style={{ flexGrow: 1 }}>
@@ -2215,51 +2223,58 @@ function App() {
             <li
               className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}
               onClick={() => setActiveTab('dashboard')}
+              title="Dashboard"
             >
               <TrendingUp />
-              Dashboard
+              <span className="nav-text">Dashboard</span>
             </li>
             <li
               className={`nav-item ${activeTab === 'tenders' ? 'active' : ''}`}
               onClick={() => setActiveTab('tenders')}
+              title="Tenders Directory"
             >
               <FileText />
-              Tenders Directory
+              <span className="nav-text">Tenders Directory</span>
             </li>
             <li
               className={`nav-item ${activeTab === 'emails' ? 'active' : ''}`}
               onClick={() => setActiveTab('emails')}
+              title="Matched Emails"
             >
               <Mail />
-              Matched Emails
+              <span className="nav-text">Matched Emails</span>
             </li>
             <li
               className={`nav-item ${activeTab === 'all-emails' ? 'active' : ''}`}
               onClick={() => setActiveTab('all-emails')}
+              title="All Emails Explorer"
             >
               <Mail />
-              All Emails Explorer
+              <span className="nav-text">All Emails Explorer</span>
             </li>
             <li
               className={`nav-item ${activeTab === 'sender-mapping' ? 'active' : ''}`}
               onClick={() => setActiveTab('sender-mapping')}
+              title="Sender Mapping"
             >
               <User />
-              Sender Mapping
+              <span className="nav-text">Sender Mapping</span>
             </li>
             <li
               className={`nav-item ${activeTab === 'rules' ? 'active' : ''}`}
               onClick={() => setActiveTab('rules')}
+              title="AI Knowledge Base"
             >
               <ShieldAlert />
-              AI Knowledge Base
+              <span className="nav-text">AI Knowledge Base</span>
             </li>
             <li
               className={`nav-item ${activeTab === 'config' ? 'active' : ''}`}
               onClick={() => setActiveTab('config')}
+              title="System Config"
             >
               <Settings />
-              System Config
+              <span className="nav-text">System Config</span>
             </li>
           </ul>
         </nav>
@@ -2267,12 +2282,13 @@ function App() {
         <div className="sidebar-footer">
           <button
             className="btn btn-primary"
-            style={{ width: '100%' }}
+            style={{ width: '100%', justifyContent: sidebarCollapsed ? 'center' : 'flex-start', padding: sidebarCollapsed ? '0.6rem' : '0.6rem 1rem' }}
             onClick={triggerSync}
             disabled={syncing}
+            title="Sync Portal"
           >
             <RefreshCw className={syncing ? 'spinner' : ''} size={16} style={{ animation: syncing ? 'spin 1s linear infinite' : 'none' }} />
-            {syncing ? 'Syncing...' : 'Sync Portal'}
+            <span className="sidebar-footer-text" style={{ marginLeft: '0.4rem' }}>{syncing ? 'Syncing...' : 'Sync Portal'}</span>
           </button>
         </div>
       </aside>
@@ -3949,18 +3965,18 @@ function App() {
               border: '1px solid rgba(255,255,255,0.06)',
             }}>
               {/* Category row */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                 <span style={{
                   display: 'flex', alignItems: 'center', gap: '0.3rem',
                   fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)',
                   textTransform: 'uppercase', letterSpacing: '0.1em',
                   whiteSpace: 'nowrap', paddingRight: '0.6rem',
                   borderRight: '1px solid rgba(255,255,255,0.1)',
-                  minWidth: '90px'
+                  minWidth: '90px', flexShrink: 0
                 }}>
                   <Grid size={12} /> Category
                 </span>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.45rem', alignItems: 'center' }}>
+                <div className="filter-row-horizontal" style={{ display: 'flex', gap: '0.45rem', alignItems: 'center' }}>
                   {availableCategories.length === 0 ? (
                     <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>Loading categories from database...</span>
                   ) : (
@@ -3978,8 +3994,11 @@ function App() {
                       <button
                         key={cat.key || 'all'}
                         className={`company-filter-btn ${isActive ? 'active' : ''}`}
-                        style={btnStyle}
-                        onClick={() => setSelectedCategoryFilter(cat.key === '' ? '' : (isActive ? '' : cat.key))}
+                        style={{ ...btnStyle, flexShrink: 0, whiteSpace: 'nowrap' }}
+                        onClick={() => {
+                          setSelectedCategoryFilter(cat.key === '' ? '' : (isActive ? '' : cat.key));
+                          setSubCatSearch('');
+                        }}
                       >
                         {cat.label}
                       </button>
@@ -3991,19 +4010,30 @@ function App() {
 
               {/* Sub-Category row — shown when category selected and subcategories exist */}
               {selectedCategoryFilter && explorerSubCategories.length > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '0.5rem' }}>
-                  <span style={{
-                    display: 'flex', alignItems: 'center', gap: '0.3rem',
-                    fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)',
-                    textTransform: 'uppercase', letterSpacing: '0.1em',
-                    whiteSpace: 'nowrap', paddingRight: '0.6rem',
-                    borderRight: '1px solid rgba(255,255,255,0.1)',
-                    minWidth: '90px'
-                  }}>
-                    <Layers size={12} /> Sub-Cat
-                  </span>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.45rem', alignItems: 'center' }}>
-                    {['', ...explorerSubCategories].map(sub => {
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '0.5rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                    <span style={{
+                      display: 'flex', alignItems: 'center', gap: '0.3rem',
+                      fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)',
+                      textTransform: 'uppercase', letterSpacing: '0.1em',
+                      whiteSpace: 'nowrap', paddingRight: '0.6rem',
+                      borderRight: '1px solid rgba(255,255,255,0.1)',
+                      minWidth: '90px'
+                    }}>
+                      <Layers size={12} /> Sub-Cat
+                    </span>
+                    {explorerSubCategories.length > 10 && (
+                      <input
+                        type="text"
+                        placeholder="Search sub-cat..."
+                        className="sub-cat-search-box"
+                        value={subCatSearch}
+                        onChange={(e) => setSubCatSearch(e.target.value)}
+                      />
+                    )}
+                  </div>
+                  <div className="filter-row-horizontal" style={{ display: 'flex', gap: '0.45rem', alignItems: 'center' }}>
+                    {['', ...explorerSubCategories.filter(s => !subCatSearch || s.toLowerCase().includes(subCatSearch.toLowerCase()))].map(sub => {
                       const baseColor = CATEGORY_COLORS[selectedCategoryFilter];
                       const isActive = selectedSubCategoryFilter === sub;
                       const btnStyle = sub
@@ -4017,7 +4047,7 @@ function App() {
                         <button
                           key={sub || 'all'}
                           className={`company-filter-btn ${isActive ? 'active' : ''}`}
-                          style={btnStyle}
+                          style={{ ...btnStyle, flexShrink: 0, whiteSpace: 'nowrap' }}
                           onClick={() => setSelectedSubCategoryFilter(isActive ? '' : sub)}
                         >
                           {sub || 'All'}
