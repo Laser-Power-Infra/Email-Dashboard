@@ -1378,46 +1378,51 @@ def resolve_company_category(
 ) -> Tuple[str, str, str]:
     """Assign a SINGLE company + category + sub_category.
 
-    Rules:
-      1. If ALL recipients in (To + CC) are INTERNAL staff/domains, mark as INTERNAL.
-      2. If ANY recipient in (To + CC) is external:
-         a. Check if any recipient exact email is in email_map as non-internal -> use recipient's mapped company.
-         b. Check if recipient's domain matches any non-internal entry in email_map -> use domain-mapped company.
-         c. Otherwise, if external recipients exist, DO NOT fall back to an internal sender! Return ('Outsider', 'Outsider', 'Outsider').
-      3. If no recipients exist at all, fall back to Sender (From).
+    Strict Rules:
+      1. Category = 'INTERNAL' ONLY WHEN ALL participants (Sender, To, AND CC) are internal staff/domains.
+      2. If ANY participant in (Sender, To, CC) is external:
+         a. Check if any external participant's exact email is in email_map as non-internal -> use mapped company/category.
+         b. Check if domain matches any non-internal entry in email_map -> use domain-mapped company.
+         c. Otherwise return ('Outsider', 'Outsider', 'Outsider').
     """
     cc_set = set(cc_emails) if cc_emails else set()
-    all_recipients = set(to_emails) | cc_set
+    to_set = set(to_emails) if to_emails else set()
+    senders_set = set(sender_emails) if sender_emails else set()
+    all_participants = senders_set | to_set | cc_set
 
     def _is_internal_email(email_str: str) -> bool:
         em = email_str.lower().strip()
+        if not em:
+            return True
         mapped = email_map.get(em)
         if mapped and mapped[1] and mapped[1].strip().lower() == _INTERNAL_CATEGORY:
             return True
         domain = em.split('@')[-1] if '@' in em else ''
         if domain in _INTERNAL_DOMAINS:
             return True
+        if 'laserpower' in em or 'lasercables' in em:
+            return True
         return False
 
-    if all_recipients:
-        all_internal = all(_is_internal_email(e) for e in all_recipients)
+    if all_participants:
+        all_internal = all(_is_internal_email(e) for e in all_participants)
         if all_internal:
-            # 100% of recipients in To + CC are internal -> mark as INTERNAL
-            for e in sorted(all_recipients):
+            # 100% of participants (Sender, To, CC) are internal -> mark as INTERNAL
+            for e in sorted(all_participants):
                 mapped = email_map.get(e.lower().strip())
                 if mapped:
                     return mapped
-            return ("LASER", "INTERNAL", "INTERNAL")
+            return ("laser", "INTERNAL", "INTERNAL")
 
-        # NOT all recipients are internal (there are external recipients in To or CC)
-        # a) Exact email match for external recipient
-        for e in sorted(all_recipients):
+        # Not all participants are internal (at least 1 external participant exists)
+        # Check exact email match for external participant
+        for e in sorted(all_participants):
             mapped = email_map.get(e.lower().strip())
             if mapped and mapped[1] and mapped[1].strip().lower() != _INTERNAL_CATEGORY:
                 return mapped
 
-        # b) Domain match for external recipient (e.g. @siemens.com)
-        for e in sorted(all_recipients):
+        # Check domain match for external participant
+        for e in sorted(all_participants):
             em = e.lower().strip()
             domain = em.split('@')[-1] if '@' in em else ''
             if domain and domain not in _INTERNAL_DOMAINS and domain not in _COMMON_DOMAINS:
@@ -1426,14 +1431,7 @@ def resolve_company_category(
                         if mapped_val[1] and mapped_val[1].strip().lower() != _INTERNAL_CATEGORY:
                             return mapped_val
 
-        # c) External recipient exists but no company mapping found -> Outsider (NEVER return INTERNAL from sender)
         return ("Outsider", "Outsider", "Outsider")
-
-    # Fall back to Sender (From) when no recipients exist
-    for s in sorted(sender_emails):
-        mapped = email_map.get(s.lower().strip())
-        if mapped:
-            return mapped
 
     return ("Outsider", "Outsider", "Outsider")
 
