@@ -1242,9 +1242,33 @@ def extract_bare_emails(raw_cc: Optional[str]) -> Set[str]:
         return set()
     return set(m.lower() for m in _EMAIL_RE.findall(raw_cc))
 
-def auto_register_laserpower_emails(db_conn, email_map: Dict[str, Tuple[str, str, str]], emails: Iterable[str]):
+SPREADSHEET_ID_MASTER = "1dmF11NM6UOolkDsRThVIZsSzkvGnBpEALszGrrXIdsU"
+SHEET_TITLE_MASTER    = "MAIL MASTER"
+
+def sync_laserpower_email_to_gsheet(gmail_service, email: str):
+    """Appends newly auto-registered laserpower email address into Column C of Google Sheet 'MAIL MASTER'."""
+    if not gmail_service:
+        return
+    try:
+        sheets_service = build('sheets', 'v4', credentials=gmail_service._http.credentials)
+        first_part = email.split('@')[0]
+        body = {
+            "values": [[first_part, '', email, 'laser', 'INTERNAL']]
+        }
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID_MASTER,
+            range=f"'{SHEET_TITLE_MASTER}'!A:E",
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body=body
+        ).execute()
+        logger.info(f"  [Google Sheet Sync] Appended {email} to Column C of MAIL MASTER sheet")
+    except Exception as e:
+        logger.warning(f"  [Google Sheet Sync] Could not append {email} to Google Sheet: {e}")
+
+def auto_register_laserpower_emails(db_conn, email_map: Dict[str, Tuple[str, str, str]], emails: Iterable[str], gmail_service=None):
     """Automatically registers any email address containing 'laserpower' or 'laserpowerinfra' 
-    into the `all_email` database table if not already present."""
+    into the `all_email` database table if not already present, and auto-populates Google Sheet."""
     if not emails or not db_conn:
         return
     for em in emails:
@@ -1262,6 +1286,8 @@ def auto_register_laserpower_emails(db_conn, email_map: Dict[str, Tuple[str, str
                 cursor.close()
                 email_map[clean_email] = ("laser", "INTERNAL", "AUTO_ADDED")
                 logger.info(f"  [Auto-Registered New Laserpower Email] {clean_email}")
+                if gmail_service:
+                    sync_laserpower_email_to_gsheet(gmail_service, clean_email)
             except Exception as e:
                 logger.error(f"Failed to auto-register laserpower email {clean_email}: {e}")
 
@@ -1709,7 +1735,7 @@ def process_gmail_batch(
             # Auto-register any new laserpower/laserpowerinfra emails to DB + memory map
             sender_emails_extracted = set(extract_bare_emails(from_field or ""))
             all_thread_emails = set(to_emails) | set(cc_emails) | sender_emails_extracted
-            auto_register_laserpower_emails(db_conn, email_map, all_thread_emails)
+            auto_register_laserpower_emails(db_conn, email_map, all_thread_emails, gmail_service=gmail_service)
 
             # Company lookup: Check To + CC (all internal = INTERNAL), mapped external, or sender fallback
             company, category, sub_category = resolve_company_category(
