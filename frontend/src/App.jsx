@@ -30,7 +30,8 @@ import {
   Filter,
   Grid,
   Layers,
-  X
+  X,
+  Tag
 } from 'lucide-react';
 
 function parseEmailThread(body, defaultSender = 'Sender') {
@@ -2198,6 +2199,7 @@ function App() {
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [subCatSearch, setSubCatSearch] = useState('');
+  const [labelSearch, setLabelSearch] = useState('');
 
   return (
     <div className="app-container">
@@ -4063,49 +4065,105 @@ function App() {
               )}
             </div>
 
-            {/* Custom Label Filter Pills (Horizontal Scrollable) */}
+            {/* Custom Label Filter Pills (3-Layer Grid with Search) */}
             {availableLabels.length > 0 && (
               <div 
                 style={{ 
                   display: 'flex', 
-                  gap: '0.5rem', 
-                  overflowX: 'auto', 
-                  paddingBottom: '0.75rem',
-                  scrollbarWidth: 'thin',
-                  borderBottom: '1px solid var(--border-color)',
-                  alignItems: 'center'
+                  flexDirection: 'column',
+                  gap: '0.6rem', 
+                  padding: '0.75rem 1.25rem',
+                  background: 'rgba(255,255,255,0.02)',
+                  borderRadius: '12px',
+                  border: '1px solid rgba(255,255,255,0.06)'
                 }}
               >
-                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: '600', marginRight: '0.25rem', whiteSpace: 'nowrap' }}>Labels:</span>
-                <button
-                  className={`btn ${selectedLabelFilter === '' ? 'btn-primary' : 'btn-secondary'}`}
+                {/* Label Header with Search & Reset */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                    <span style={{ 
+                      display: 'flex', alignItems: 'center', gap: '0.3rem', 
+                      fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', 
+                      textTransform: 'uppercase', letterSpacing: '0.1em' 
+                    }}>
+                      <Tag size={12} /> Custom Labels ({availableLabels.length})
+                    </span>
+                    {selectedLabelFilter && (
+                      <button 
+                        className="btn btn-secondary" 
+                        style={{ padding: '0.15rem 0.5rem', fontSize: '0.7rem', borderRadius: '4px', height: 'auto', backgroundColor: 'rgba(236,72,153,0.15)', color: '#ec4899', borderColor: 'rgba(236,72,153,0.3)' }}
+                        onClick={() => setSelectedLabelFilter('')}
+                      >
+                        Active Label: {selectedLabelFilter} ✕
+                      </button>
+                    )}
+                  </div>
+
+                  <input
+                    type="text"
+                    placeholder="Search labels..."
+                    className="sub-cat-search-box"
+                    style={{ width: '180px' }}
+                    value={labelSearch}
+                    onChange={(e) => setLabelSearch(e.target.value)}
+                  />
+                </div>
+
+                {/* 3-Layer (3-Row) Scrollable Container */}
+                <div 
+                  className="filter-row-horizontal"
                   style={{ 
-                    padding: '0.4rem 0.9rem', 
-                    borderRadius: '20px', 
-                    fontSize: '0.8rem',
-                    whiteSpace: 'nowrap',
-                    flexShrink: 0
+                    display: 'flex', 
+                    flexWrap: 'wrap', 
+                    gap: '0.45rem', 
+                    maxHeight: '118px', 
+                    overflowY: 'auto',
+                    paddingRight: '0.3rem',
+                    scrollbarWidth: 'thin'
                   }}
-                  onClick={() => setSelectedLabelFilter('')}
                 >
-                  All Labels
-                </button>
-                {availableLabels.map(lbl => (
                   <button
-                    key={lbl}
-                    className={`btn ${selectedLabelFilter === lbl ? 'btn-primary' : 'btn-secondary'}`}
-                    style={{ 
-                      padding: '0.4rem 0.9rem', 
-                      borderRadius: '20px', 
-                      fontSize: '0.8rem',
+                    className={`company-filter-btn ${selectedLabelFilter === '' ? 'active' : ''}`}
+                    style={{
+                      padding: '0.35rem 0.8rem',
+                      borderRadius: '20px',
+                      fontSize: '0.78rem',
                       whiteSpace: 'nowrap',
-                      flexShrink: 0
+                      flexShrink: 0,
+                      backgroundColor: selectedLabelFilter === '' ? 'var(--color-primary, #6366f1)' : 'rgba(255,255,255,0.05)',
+                      borderColor: selectedLabelFilter === '' ? 'var(--color-primary, #6366f1)' : 'rgba(255,255,255,0.15)',
+                      color: selectedLabelFilter === '' ? '#ffffff' : 'var(--text-muted)'
                     }}
-                    onClick={() => setSelectedLabelFilter(lbl)}
+                    onClick={() => setSelectedLabelFilter('')}
                   >
-                    {lbl}
+                    All Labels
                   </button>
-                ))}
+
+                  {availableLabels
+                    .filter(lbl => !labelSearch || lbl.toLowerCase().includes(labelSearch.toLowerCase()))
+                    .map(lbl => {
+                      const isActive = selectedLabelFilter === lbl;
+                      return (
+                        <button
+                          key={lbl}
+                          className={`company-filter-btn ${isActive ? 'active' : ''}`}
+                          style={{ 
+                            padding: '0.35rem 0.85rem', 
+                            borderRadius: '20px', 
+                            fontSize: '0.78rem',
+                            whiteSpace: 'nowrap',
+                            flexShrink: 0,
+                            backgroundColor: isActive ? '#ec4899' : 'rgba(236, 72, 153, 0.1)',
+                            borderColor: isActive ? '#ec4899' : 'rgba(236, 72, 153, 0.35)',
+                            color: isActive ? '#ffffff' : '#ec4899'
+                          }}
+                          onClick={() => setSelectedLabelFilter(isActive ? '' : lbl)}
+                        >
+                          {lbl}
+                        </button>
+                      );
+                    })}
+                </div>
               </div>
             )}
 
