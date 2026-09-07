@@ -219,6 +219,53 @@ button, input, select, textarea {
   padding-top: 1.5rem;
 }
 
+/* Sidebar Collapsed Styles */
+.sidebar {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar.collapsed {
+  width: 80px !important;
+  padding: 1.5rem 0.75rem !important;
+}
+
+.sidebar.collapsed .nav-text,
+.sidebar.collapsed .sidebar-footer-text {
+  display: none !important;
+}
+
+.sidebar.collapsed .brand {
+  justify-content: center !important;
+  padding: 0 !important;
+}
+
+.sidebar.collapsed .nav-item {
+  justify-content: center !important;
+  padding: 0.85rem 0 !important;
+}
+
+.sidebar-toggle-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+
+.sidebar-toggle-btn:hover {
+  background: rgba(99, 102, 241, 0.2);
+  color: #ffffff;
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
 /* Main Content Area */
 .main-content {
   flex-grow: 1;
@@ -1117,6 +1164,109 @@ body.theme-pink .filter-input-number:focus {
 .checkbox-label input {
   cursor: pointer;
 }
+
+/* ── Collapsible Sidebar & Horizontal Filter Bar Enhancements ── */
+.sidebar {
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), padding 0.3s ease;
+  position: relative;
+}
+
+.sidebar.collapsed {
+  width: 80px;
+  padding: 1.5rem 0.6rem;
+}
+
+.sidebar.collapsed .brand-title-text,
+.sidebar.collapsed .nav-text,
+.sidebar.collapsed .sidebar-footer-text {
+  display: none !important;
+}
+
+.sidebar.collapsed .company-logo {
+  width: 36px !important;
+  height: 36px !important;
+  object-fit: contain;
+}
+
+.sidebar.collapsed .nav-item {
+  justify-content: center;
+  padding: 0.85rem 0;
+  border-radius: 10px;
+}
+
+.sidebar.collapsed .sidebar-footer {
+  padding: 1rem 0.25rem;
+}
+
+.sidebar-toggle-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.sidebar-toggle-btn:hover {
+  background: rgba(99, 102, 241, 0.2);
+  color: var(--text-main);
+  border-color: var(--color-primary-light);
+}
+
+/* Horizontal Scroll Container for Filter Chips */
+.filter-row-horizontal {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding-bottom: 0.45rem;
+  scrollbar-width: thin;
+  scroll-behavior: smooth;
+  flex-grow: 1;
+}
+
+.filter-row-horizontal::-webkit-scrollbar {
+  height: 5px;
+}
+
+.filter-row-horizontal::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 4px;
+}
+
+.filter-row-horizontal::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.35);
+  border-radius: 4px;
+}
+
+.filter-row-horizontal::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.6);
+}
+
+.sub-cat-search-box {
+  padding: 0.3rem 0.65rem;
+  font-size: 0.78rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-main);
+  outline: none;
+  width: 170px;
+  transition: all 0.2s ease;
+}
+
+.sub-cat-search-box:focus {
+  border-color: var(--color-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
 
 
 
