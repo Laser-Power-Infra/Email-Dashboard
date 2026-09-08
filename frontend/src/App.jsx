@@ -30,7 +30,8 @@ import {
   Filter,
   Grid,
   Layers,
-  X
+  X,
+  Tag
 } from 'lucide-react';
 
 function parseEmailThread(body, defaultSender = 'Sender') {
@@ -273,6 +274,210 @@ function hslToHex(h, s, l) {
   return `#${f(0)}${f(8)}${f(4)}`;
 }
 
+function SearchableMultiSelectDropdown({ label, icon, options = [], selectedValues = [], onSelectChange, placeholder = 'Search options...' }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filteredOptions = useMemo(() => {
+    if (!search.trim()) return options;
+    return options.filter(opt => String(opt).toLowerCase().includes(search.toLowerCase()));
+  }, [options, search]);
+
+  const selectedSet = useMemo(() => new Set(selectedValues), [selectedValues]);
+
+  const handleToggleOption = (opt) => {
+    const next = new Set(selectedSet);
+    if (next.has(opt)) {
+      next.delete(opt);
+    } else {
+      next.add(opt);
+    }
+    onSelectChange(Array.from(next));
+  };
+
+  const handleSelectAllFiltered = () => {
+    const next = new Set(selectedSet);
+    filteredOptions.forEach(opt => next.add(opt));
+    onSelectChange(Array.from(next));
+  };
+
+  const handleClearAll = () => {
+    onSelectChange([]);
+  };
+
+  return (
+    <div ref={dropdownRef} style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        type="button"
+        className={`company-filter-btn ${selectedSet.size > 0 ? 'active' : ''}`}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.45rem',
+          padding: '0.45rem 0.85rem',
+          borderRadius: '8px',
+          fontSize: '0.8rem',
+          fontWeight: 600,
+          backgroundColor: selectedSet.size > 0 ? 'var(--color-primary, #6366f1)' : 'rgba(255,255,255,0.05)',
+          borderColor: selectedSet.size > 0 ? 'var(--color-primary, #6366f1)' : 'rgba(255,255,255,0.15)',
+          color: selectedSet.size > 0 ? '#ffffff' : 'var(--text-main)',
+          cursor: 'pointer',
+          whiteSpace: 'nowrap'
+        }}
+        onClick={() => setIsOpen(prev => !prev)}
+      >
+        {icon}
+        <span>{label}</span>
+        {selectedSet.size > 0 ? (
+          <span style={{
+            backgroundColor: 'rgba(255,255,255,0.25)',
+            padding: '0.1rem 0.45rem',
+            borderRadius: '10px',
+            fontSize: '0.72rem',
+            fontWeight: 700
+          }}>
+            {selectedSet.size}
+          </span>
+        ) : (
+          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>All</span>
+        )}
+        <span style={{ fontSize: '0.65rem', marginLeft: '0.25rem' }}>{isOpen ? '▲' : '▼'}</span>
+      </button>
+
+      {isOpen && (
+        <div style={{
+          position: 'absolute',
+          top: 'calc(100% + 6px)',
+          left: 0,
+          zIndex: 1000,
+          minWidth: '290px',
+          maxWidth: '380px',
+          backgroundColor: 'var(--bg-card, #ffffff)',
+          border: '1px solid var(--border-color, rgba(255,255,255,0.15))',
+          borderRadius: '12px',
+          boxShadow: '0 12px 35px rgba(0,0,0,0.25)',
+          padding: '0.75rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.6rem'
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <input
+              type="text"
+              placeholder={placeholder}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="sub-cat-search-box"
+              style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg-main)', color: 'var(--text-main)' }}
+              autoFocus
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem' }}>
+              <span style={{ color: 'var(--text-muted)' }}>
+                Showing {filteredOptions.length} of {options.length}
+              </span>
+              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                <button
+                  type="button"
+                  style={{
+                    background: 'rgba(99,102,241,0.15)',
+                    border: '1px solid rgba(99,102,241,0.3)',
+                    color: 'var(--color-primary, #6366f1)',
+                    padding: '0.2rem 0.5rem',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontWeight: 600
+                  }}
+                  onClick={handleSelectAllFiltered}
+                >
+                  Select All ({filteredOptions.length})
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    background: 'rgba(0,0,0,0.04)',
+                    border: '1px solid var(--border-color)',
+                    color: 'var(--text-muted)',
+                    padding: '0.2rem 0.5rem',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                  onClick={handleClearAll}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div style={{
+            maxHeight: '220px',
+            overflowY: 'auto',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.25rem',
+            paddingRight: '0.2rem',
+            scrollbarWidth: 'thin'
+          }}>
+            {filteredOptions.length === 0 ? (
+              <div style={{ padding: '0.75rem', fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+                No matching options
+              </div>
+            ) : (
+              filteredOptions.map(opt => {
+                const isSelected = selectedSet.has(opt);
+                return (
+                  <div
+                    key={opt}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      padding: '0.35rem 0.5rem',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      backgroundColor: isSelected ? 'rgba(99,102,241,0.12)' : 'transparent',
+                      transition: 'background 0.15s ease'
+                    }}
+                    onClick={() => handleToggleOption(opt)}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => {}}
+                      style={{ cursor: 'pointer', accentColor: 'var(--color-primary, #6366f1)' }}
+                    />
+                    <span style={{
+                      fontSize: '0.8rem',
+                      color: isSelected ? 'var(--color-primary, #6366f1)' : 'var(--text-main)',
+                      fontWeight: isSelected ? 600 : 400,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}>
+                      {opt}
+                    </span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const [COMPANY_LIST, setCompanyList] = useState(['Laser', 'GMD', 'BHUVEE', 'CEEBUILD', 'COMMON', 'DAILMER', 'MAXCAB', 'UIC']);
   const COMPANY_COLORS = new Proxy({
@@ -302,6 +507,7 @@ function App() {
     'RM': '#ec4899',
     'Logistic Head': '#f43f5e',
     'Service / Job workers': '#14b8a6',
+    'Undefined': '#6b7280',
     'Banking & Finance': '#10b981',
     'Legal': '#ef4444',
     'Sales': '#f59e0b',
@@ -2197,6 +2403,7 @@ function App() {
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [subCatSearch, setSubCatSearch] = useState('');
+  const [labelSearch, setLabelSearch] = useState('');
 
   return (
     <div className="app-container">
@@ -3957,156 +4164,161 @@ function App() {
         {activeTab === 'all-emails' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             
-            {/* Category & Sub-Category Filter Bars */}
+            {/* Category, Sub-Cat, & Custom Labels Multi-Select Filter Bar */}
             <div style={{
               display: 'flex',
               flexDirection: 'column',
-              gap: '0.6rem',
-              padding: '0.75rem 1.25rem',
+              gap: '0.75rem',
+              padding: '1rem 1.25rem',
               background: 'rgba(255,255,255,0.02)',
-              borderRadius: '12px',
-              border: '1px solid rgba(255,255,255,0.06)',
+              borderRadius: '14px',
+              border: '1px solid rgba(255,255,255,0.08)'
             }}>
-              {/* Category row */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <span style={{
-                  display: 'flex', alignItems: 'center', gap: '0.3rem',
-                  fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)',
-                  textTransform: 'uppercase', letterSpacing: '0.1em',
-                  whiteSpace: 'nowrap', paddingRight: '0.6rem',
-                  borderRight: '1px solid rgba(255,255,255,0.1)',
-                  minWidth: '90px', flexShrink: 0
-                }}>
-                  <Grid size={12} /> Category
-                </span>
-                <div className="filter-row-horizontal" style={{ display: 'flex', gap: '0.45rem', alignItems: 'center' }}>
-                  {availableCategories.length === 0 ? (
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>Loading categories from database...</span>
-                  ) : (
-                    [{ key: '', label: 'All' }, ...availableCategories.map(c => ({ key: c, label: c }))].map(cat => {
-                    const color = cat.key ? (CATEGORY_COLORS[cat.key] || '#818cf8') : null;
-                    const isActive = cat.key === '' ? selectedCategoryFilter === '' : selectedCategoryFilter === cat.key;
-                    const btnStyle = cat.key
-                      ? isActive
-                        ? { backgroundColor: color, borderColor: color, color: '#ffffff' }
-                        : { backgroundColor: `${color}18`, borderColor: `${color}50`, color: color }
-                      : isActive
-                        ? { backgroundColor: 'var(--color-primary, #6366f1)', borderColor: 'var(--color-primary, #6366f1)', color: '#ffffff' }
-                        : { backgroundColor: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.15)', color: 'var(--text-muted)' };
-                    return (
-                      <button
-                        key={cat.key || 'all'}
-                        className={`company-filter-btn ${isActive ? 'active' : ''}`}
-                        style={{ ...btnStyle, flexShrink: 0, whiteSpace: 'nowrap' }}
-                        onClick={() => {
-                          setSelectedCategoryFilter(cat.key === '' ? '' : (isActive ? '' : cat.key));
-                          setSubCatSearch('');
-                        }}
-                      >
-                        {cat.label}
-                      </button>
-                    );
-                  })
-                  )}
-                </div>
+              {/* Dropdowns Row */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap' }}>
+                {/* Category Dropdown */}
+                <SearchableMultiSelectDropdown
+                  label="Category"
+                  icon={<Grid size={14} />}
+                  options={availableCategories}
+                  selectedValues={selectedCategoryFilter ? selectedCategoryFilter.split(',').filter(Boolean) : []}
+                  onSelectChange={(vals) => {
+                    setSelectedCategoryFilter(vals.join(','));
+                    if (vals.length === 0) setSelectedSubCategoryFilter('');
+                  }}
+                  placeholder="Search category..."
+                />
+
+                {/* Sub-Category Dropdown */}
+                {explorerSubCategories.length > 0 && (
+                  <SearchableMultiSelectDropdown
+                    label="Sub-Cat"
+                    icon={<Layers size={14} />}
+                    options={explorerSubCategories}
+                    selectedValues={selectedSubCategoryFilter ? selectedSubCategoryFilter.split(',').filter(Boolean) : []}
+                    onSelectChange={(vals) => setSelectedSubCategoryFilter(vals.join(','))}
+                    placeholder="Search sub-cat..."
+                  />
+                )}
+
+                {/* Custom Labels Dropdown */}
+                {availableLabels.length > 0 && (
+                  <SearchableMultiSelectDropdown
+                    label={`Custom Labels (${availableLabels.length})`}
+                    icon={<Tag size={14} />}
+                    options={availableLabels}
+                    selectedValues={selectedLabelFilter ? selectedLabelFilter.split(',').filter(Boolean) : []}
+                    onSelectChange={(vals) => setSelectedLabelFilter(vals.join(','))}
+                    placeholder="Search labels..."
+                  />
+                )}
+
+                {/* Reset All Filters Button */}
+                {(selectedCategoryFilter || selectedSubCategoryFilter || selectedLabelFilter) && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{
+                      padding: '0.45rem 0.85rem',
+                      borderRadius: '8px',
+                      fontSize: '0.78rem',
+                      backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                      color: '#ef4444',
+                      borderColor: 'rgba(239, 68, 68, 0.3)',
+                      cursor: 'pointer'
+                    }}
+                    onClick={() => {
+                      setSelectedCategoryFilter('');
+                      setSelectedSubCategoryFilter('');
+                      setSelectedLabelFilter('');
+                    }}
+                  >
+                    Reset All Filters ✕
+                  </button>
+                )}
               </div>
 
-              {/* Sub-Category row — shown when category selected and subcategories exist */}
-              {selectedCategoryFilter && explorerSubCategories.length > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '0.5rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
-                    <span style={{
-                      display: 'flex', alignItems: 'center', gap: '0.3rem',
-                      fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)',
-                      textTransform: 'uppercase', letterSpacing: '0.1em',
-                      whiteSpace: 'nowrap', paddingRight: '0.6rem',
-                      borderRight: '1px solid rgba(255,255,255,0.1)',
-                      minWidth: '90px'
-                    }}>
-                      <Layers size={12} /> Sub-Cat
+              {/* Active Selected Badges / Chips Display Bar */}
+              {(selectedCategoryFilter || selectedSubCategoryFilter || selectedLabelFilter) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', paddingTop: '0.4rem', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Active Filters:</span>
+                  
+                  {/* Category Chips */}
+                  {selectedCategoryFilter && selectedCategoryFilter.split(',').filter(Boolean).map(cat => (
+                    <span
+                      key={`cat-${cat}`}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                        padding: '0.2rem 0.65rem', borderRadius: '14px', fontSize: '0.75rem',
+                        backgroundColor: `${CATEGORY_COLORS[cat] || '#818cf8'}25`,
+                        border: `1px solid ${CATEGORY_COLORS[cat] || '#818cf8'}60`,
+                        color: CATEGORY_COLORS[cat] || '#818cf8', fontWeight: 600
+                      }}
+                    >
+                      {cat}
+                      <span
+                        style={{ cursor: 'pointer', opacity: 0.8, marginLeft: '0.1rem' }}
+                        onClick={() => {
+                          const next = selectedCategoryFilter.split(',').filter(c => c !== cat).join(',');
+                          setSelectedCategoryFilter(next);
+                        }}
+                      >
+                        ✕
+                      </span>
                     </span>
-                    {explorerSubCategories.length > 10 && (
-                      <input
-                        type="text"
-                        placeholder="Search sub-cat..."
-                        className="sub-cat-search-box"
-                        value={subCatSearch}
-                        onChange={(e) => setSubCatSearch(e.target.value)}
-                      />
-                    )}
-                  </div>
-                  <div className="filter-row-horizontal" style={{ display: 'flex', gap: '0.45rem', alignItems: 'center' }}>
-                    {['', ...explorerSubCategories.filter(s => !subCatSearch || s.toLowerCase().includes(subCatSearch.toLowerCase()))].map(sub => {
-                      const baseColor = CATEGORY_COLORS[selectedCategoryFilter];
-                      const isActive = selectedSubCategoryFilter === sub;
-                      const btnStyle = sub
-                        ? isActive
-                          ? { backgroundColor: baseColor, borderColor: baseColor, color: '#ffffff' }
-                          : { backgroundColor: `${baseColor}15`, borderColor: `${baseColor}40`, color: baseColor }
-                        : isActive
-                          ? { backgroundColor: 'var(--color-primary, #6366f1)', borderColor: 'var(--color-primary, #6366f1)', color: '#ffffff' }
-                          : { backgroundColor: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.15)', color: 'var(--text-muted)' };
-                      return (
-                        <button
-                          key={sub || 'all'}
-                          className={`company-filter-btn ${isActive ? 'active' : ''}`}
-                          style={{ ...btnStyle, flexShrink: 0, whiteSpace: 'nowrap' }}
-                          onClick={() => setSelectedSubCategoryFilter(isActive ? '' : sub)}
-                        >
-                          {sub || 'All'}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  ))}
+
+                  {/* Sub-Category Chips */}
+                  {selectedSubCategoryFilter && selectedSubCategoryFilter.split(',').filter(Boolean).map(sub => (
+                    <span
+                      key={`sub-${sub}`}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                        padding: '0.2rem 0.65rem', borderRadius: '14px', fontSize: '0.75rem',
+                        backgroundColor: 'rgba(99,102,241,0.2)',
+                        border: '1px solid rgba(99,102,241,0.4)',
+                        color: '#818cf8', fontWeight: 600
+                      }}
+                    >
+                      Sub: {sub}
+                      <span
+                        style={{ cursor: 'pointer', opacity: 0.8, marginLeft: '0.1rem' }}
+                        onClick={() => {
+                          const next = selectedSubCategoryFilter.split(',').filter(s => s !== sub).join(',');
+                          setSelectedSubCategoryFilter(next);
+                        }}
+                      >
+                        ✕
+                      </span>
+                    </span>
+                  ))}
+
+                  {/* Custom Label Chips */}
+                  {selectedLabelFilter && selectedLabelFilter.split(',').filter(Boolean).map(lbl => (
+                    <span
+                      key={`lbl-${lbl}`}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                        padding: '0.2rem 0.65rem', borderRadius: '14px', fontSize: '0.75rem',
+                        backgroundColor: 'rgba(236,72,153,0.2)',
+                        border: '1px solid rgba(236,72,153,0.4)',
+                        color: '#ec4899', fontWeight: 600
+                      }}
+                    >
+                      Label: {lbl}
+                      <span
+                        style={{ cursor: 'pointer', opacity: 0.8, marginLeft: '0.1rem' }}
+                        onClick={() => {
+                          const next = selectedLabelFilter.split(',').filter(l => l !== lbl).join(',');
+                          setSelectedLabelFilter(next);
+                        }}
+                      >
+                        ✕
+                      </span>
+                    </span>
+                  ))}
                 </div>
               )}
             </div>
-
-            {/* Custom Label Filter Pills (Horizontal Scrollable) */}
-            {availableLabels.length > 0 && (
-              <div 
-                style={{ 
-                  display: 'flex', 
-                  gap: '0.5rem', 
-                  overflowX: 'auto', 
-                  paddingBottom: '0.75rem',
-                  scrollbarWidth: 'thin',
-                  borderBottom: '1px solid var(--border-color)',
-                  alignItems: 'center'
-                }}
-              >
-                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: '600', marginRight: '0.25rem', whiteSpace: 'nowrap' }}>Labels:</span>
-                <button
-                  className={`btn ${selectedLabelFilter === '' ? 'btn-primary' : 'btn-secondary'}`}
-                  style={{ 
-                    padding: '0.4rem 0.9rem', 
-                    borderRadius: '20px', 
-                    fontSize: '0.8rem',
-                    whiteSpace: 'nowrap',
-                    flexShrink: 0
-                  }}
-                  onClick={() => setSelectedLabelFilter('')}
-                >
-                  All Labels
-                </button>
-                {availableLabels.map(lbl => (
-                  <button
-                    key={lbl}
-                    className={`btn ${selectedLabelFilter === lbl ? 'btn-primary' : 'btn-secondary'}`}
-                    style={{ 
-                      padding: '0.4rem 0.9rem', 
-                      borderRadius: '20px', 
-                      fontSize: '0.8rem',
-                      whiteSpace: 'nowrap',
-                      flexShrink: 0
-                    }}
-                    onClick={() => setSelectedLabelFilter(lbl)}
-                  >
-                    {lbl}
-                  </button>
-                ))}
-              </div>
-            )}
 
             {/* Explorer Sub-filters Bar */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>

@@ -3350,14 +3350,22 @@ app.get('/api/all-emails', async (req, res) => {
       params.push('%tendertiger.com%');
     }
 
-    // Category/SubCategory filter using pre-compiled columns
+    // Category / SubCategory multi-select filtering
     if (category) {
-      if (subCategory) {
-        conditions.push(`LOWER(t.category) = LOWER(?) AND LOWER(t.sub_category) = LOWER(?)`);
-        params.push(category, subCategory);
-      } else {
-        conditions.push(`LOWER(t.category) = LOWER(?)`);
-        params.push(category);
+      const catList = String(category).split(',').map(c => c.trim()).filter(Boolean);
+      if (catList.length > 0) {
+        const placeholders = catList.map(() => 'LOWER(?)').join(',');
+        conditions.push(`LOWER(t.category) IN (${placeholders})`);
+        params.push(...catList.map(c => c.toLowerCase()));
+      }
+    }
+
+    if (subCategory) {
+      const subList = String(subCategory).split(',').map(s => s.trim()).filter(Boolean);
+      if (subList.length > 0) {
+        const placeholders = subList.map(() => 'LOWER(?)').join(',');
+        conditions.push(`LOWER(t.sub_category) IN (${placeholders})`);
+        params.push(...subList.map(s => s.toLowerCase()));
       }
     }
 
@@ -3412,8 +3420,12 @@ app.get('/api/all-emails', async (req, res) => {
       }
     }
     if (label) {
-      conditions.push(`FIND_IN_SET(?, REPLACE(user_labels, ', ', ',')) > 0`);
-      params.push(label);
+      const lblList = String(label).split(',').map(l => l.trim()).filter(Boolean);
+      if (lblList.length > 0) {
+        const lblConditions = lblList.map(() => `FIND_IN_SET(?, REPLACE(user_labels, ', ', ',')) > 0`);
+        conditions.push(`(${lblConditions.join(' OR ')})`);
+        params.push(...lblList);
+      }
     }
     const { startUtc: allStartUtc, endUtc: allEndUtc } = getUtcRangeForIstDates(startDate, endDate);
     if (allStartUtc) {
