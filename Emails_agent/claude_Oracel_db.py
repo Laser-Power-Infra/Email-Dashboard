@@ -1421,37 +1421,34 @@ def resolve_company_category(
     senders_set = set(sender_emails) if sender_emails else set()
     all_participants = senders_set | to_set | cc_set
 
+    # 1. Determine company
+    comp = 'laser'
+    for e in sorted(all_participants):
+        p_comp = _get_participant_company(e, email_map)
+        if p_comp and p_comp.lower() != 'outsider':
+            comp = p_comp
+            break
+
     def _is_internal_email(email_str: str) -> bool:
         em = email_str.lower().strip()
         if not em:
             return True
-        mapped = email_map.get(em)
-        if mapped and mapped[1] and mapped[1].strip().lower() == _INTERNAL_CATEGORY:
-            return True
         domain = em.split('@')[-1] if '@' in em else ''
         if domain in _INTERNAL_DOMAINS:
+            return True
+        mapped = email_map.get(em)
+        if mapped and mapped[1] and mapped[1].strip().lower() == _INTERNAL_CATEGORY:
             return True
         return False
 
     if all_participants:
-        all_internal = all(_is_internal_email(e) for e in all_participants)
+        all_internal = all(_is_internal_email(e) for e in all_participants if e.strip())
         if all_internal:
             # 100% of participants (Sender, To, CC) are internal -> mark as INTERNAL
-            for e in sorted(all_participants):
-                mapped = email_map.get(e.lower().strip())
-                if mapped:
-                    return mapped
-            return ("laser", "INTERNAL", "INTERNAL")
+            return (comp if comp.lower() != 'outsider' else "laser", "INTERNAL", "INTERNAL")
 
-        # Not all participants are internal -> Category = Undefined
-        for e in sorted(all_participants):
-            comp = _get_participant_company(e, email_map)
-            if comp:
-                return (comp, "Undefined", "Undefined")
-
-        return ("Outsider", "Undefined", "Undefined")
-
-    return ("Outsider", "Undefined", "Undefined")
+    # Not all participants are internal -> Category = Undefined
+    return (comp, "Undefined", "Undefined")
 
 _HEADER_LINE_RE = re.compile(r'^(to|cc)\s*:\s*(.*)$', re.IGNORECASE)
 _ANY_HEADER_RE  = re.compile(r'^[a-z-]{1,24}\s*:', re.IGNORECASE)
