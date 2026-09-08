@@ -26,6 +26,7 @@ Fixes applied (v2):
 
 import atexit
 import base64
+import gc
 import io
 import csv
 import concurrent.futures
@@ -1100,7 +1101,8 @@ def extract_text_locally(file_bytes: bytes, file_name: str, timeout_seconds: int
         future   = executor.submit(_extract_text_task, tmp_path, file_name)
         return future.result(timeout=timeout_seconds)
     except concurrent.futures.TimeoutError:
-        logger.warning(f"Extraction of {file_name} timed out after {timeout_seconds}s")
+        logger.warning(f"Extraction of {file_name} timed out after {timeout_seconds}s – resetting executor pool")
+        _shutdown_executor()  # Reset executor pool so hung worker process is terminated
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -1108,7 +1110,11 @@ def extract_text_locally(file_bytes: bytes, file_name: str, timeout_seconds: int
         return f"[Extraction timed out after {timeout_seconds}s]"
     except Exception as e:
         logger.error(f"Extraction failed for {file_name}: {e}")
+        if "BrokenProcessPool" in type(e).__name__:
+            _shutdown_executor()
         return f"[Extraction failed: {e}]"
+    finally:
+        gc.collect()
 
 def extract_text_locally_inner(file_bytes: bytes, file_name: str) -> str:
     """FIX 15: all optional imports are guarded with try/except here."""
@@ -1939,6 +1945,7 @@ def process_gmail_batch(
         status='completed' if end_index >= total_threads else 'partial',
     )
     db_conn.close()
+    gc.collect()  # Force garbage collection to free memory buffers after batch processing
 
     logger.info(f"\n{'='*60}")
     logger.info(f"Batch summary: processed={processed_count}, important={important_count}, "
