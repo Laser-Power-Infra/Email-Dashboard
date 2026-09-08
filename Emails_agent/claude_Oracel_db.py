@@ -30,7 +30,6 @@ import gc
 import io
 import csv
 import concurrent.futures
-import json
 import logging
 import os
 import re
@@ -40,7 +39,6 @@ import random
 import hashlib
 import tempfile
 import subprocess
-import traceback
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime          # FIX 10: top-level import
 from typing import Dict, Iterable, List, Optional, Set, Tuple
@@ -128,7 +126,6 @@ IMPORTANT_DOMAINS = [
 
 
 MAX_RUN_TIME_MS      = 25 * 60 * 1000
-MAX_THREADS_PER_RUN  = 500
 BATCH_SIZE           = 500
 LOOKBACK_DAYS        = 1
 
@@ -424,83 +421,6 @@ def determine_importance(
     ):
         importance_reasons.append("Contains important attachment")
         is_important = True
-
-    category_keywords = {
-        'Tender/RFP/Bid': {
-            'keywords': ['tender','rfp','rfq','eoi','bid','procurement','gem',
-                         'notice inviting','expression of interest','request for proposal',
-                         'corrigendum','pre-bid','technical bid','commercial bid',
-                         'financial bid','price bid','earnest money','emd',
-                         'security deposit','performance guarantee','limited tender',
-                         'open tender','single tender','two bid','nit'],
-            'priority': 'high',
-        },
-        'Purchase Order': {
-            'keywords': ['purchase order','po#','po number','work order',
-                         'supply order','letter of award','loa','letter of intent',
-                         'loi','rate contract'],
-            'priority': 'high',
-        },
-        'Contract/Agreement': {
-            'keywords': ['contract','agreement','mou','nda','non-disclosure',
-                         'memorandum of understanding','partnership','joint venture',
-                         'collaboration','service level agreement','sla'],
-            'priority': 'high',
-        },
-        'Invoice/Billing': {
-            'keywords': ['invoice','bill','proforma','payment','debit note',
-                         'credit note','tax invoice','commercial invoice'],
-            'priority': 'medium',
-        },
-        'Banking/Finance': {
-            'keywords': ['bank statement','bank guarantee','bg','letter of credit',
-                         'lc','financial','emd','security deposit',
-                         'performance guarantee','bank confirmation'],
-            'priority': 'high',
-        },
-        'Client Communication': {
-            'keywords': ['client','customer','project update','delivery schedule',
-                         'meeting','requirement','feedback','review','approval'],
-            'priority': 'medium',
-        },
-        'Vendor/Supplier': {
-            'keywords': ['vendor','supplier','material','equipment','quotation',
-                         'rate','price list','catalogue','brochure','specifications'],
-            'priority': 'medium',
-        },
-        'Legal/Compliance': {
-            'keywords': ['legal','compliance','regulatory','tax','gst',
-                         'income tax','audit','statutory','license','registration',
-                         'certification','iso','quality'],
-            'priority': 'high',
-        },
-        'Government/PSU': {
-            'keywords': ['government','ministry','department','psu','public sector',
-                         'undertaking','corporation','board','commission','authority',
-                         'gov.in','nic.in'],
-            'priority': 'high',
-        },
-        'Sales/Proposal': {
-            'keywords': ['sales','proposal','offer','discount','negotiation',
-                         'deal','opportunity','lead','prospect','enquiry'],
-            'priority': 'medium',
-        },
-    }
-
-    max_matches   = 0
-    best_category = "General"
-    best_priority = "low"
-    for cat_name, cat_data in category_keywords.items():
-        matches = sum(1 for kw in cat_data['keywords'] if kw in subject_lower or kw in body_lower)
-        if matches > max_matches:
-            max_matches   = matches
-            best_category = cat_name
-            best_priority = cat_data['priority']
-
-    category = best_category
-    if best_priority == 'high':
-        is_important = True
-        importance_reasons.append(f"High priority category: {category}")
 
     important_patterns = [
         (r'(?:deadline|due date|last date).*?(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})', 'Contains deadline'),
@@ -1461,6 +1381,11 @@ def resolve_company_category(
     # Not all participants are internal -> Category = Undefined
     return (comp, "Undefined", "Undefined")
 
+# ponytail: in-memory only, resets on restart. Move to a DB column if a poison
+# thread needs to stay skipped across container restarts.
+MAX_THREAD_FAILURES = 3
+_THREAD_FAILURES: Dict[str, int] = {}
+
 _HEADER_LINE_RE = re.compile(r'^(to|cc)\s*:\s*(.*)$', re.IGNORECASE)
 _ANY_HEADER_RE  = re.compile(r'^[a-z-]{1,24}\s*:', re.IGNORECASE)
 MAX_RECIPIENTS  = 100
@@ -1802,8 +1727,10 @@ def process_gmail_batch(
                     all_attachment_names.append(att["filename"])
 
             body_content = "\n\n".join(body_parts)
-            cc_details   = ", ".join(sorted(cc_emails)) or "[None]"
-            to_details   = ", ".join(sorted(to_emails)) or "[None]"
+            # TEXT columns cap at 65535 bytes; an unbounded join on a large
+            # mailing-list thread raises "Data too long" and the thread is retried forever.
+            cc_details   = ", ".join(sorted(cc_emails)[:MAX_RECIPIENTS]) or "[None]"
+            to_details   = ", ".join(sorted(to_emails)[:MAX_RECIPIENTS]) or "[None]"
 
             is_important, importance_reasons = determine_importance(
                 subject, body_content, from_field, all_attachment_names
@@ -1896,8 +1823,8 @@ def process_gmail_batch(
                 "to_details":         to_details,
                 "subject":            subject,
                 "body":               body_content[:BODY_MAX_CHARS],
-                "attach_names":       ", ".join(file_names)  or "[No Attachments]",
-                "attach_links":       ", ".join(drive_links) or "[No Links]",
+                "attach_names":       ", ".join(file_names[:MAX_RECIPIENTS])  or "[No Attachments]",
+                "attach_links":       ", ".join(drive_links[:MAX_RECIPIENTS]) or "[No Links]",
                 "ocr_text":           ocr_text,
                 "ai_summary":         "[Not analyzed]",
                 "category":           category,
@@ -1934,7 +1861,11 @@ def process_gmail_batch(
 
         except Exception as e:
             failed_count += 1
-            logger.error(f"[FAIL] Thread {thread_id}: {e}", exc_info=True)
+            fails = _THREAD_FAILURES.get(thread_id, 0) + 1
+            _THREAD_FAILURES[thread_id] = fails
+            logger.error(f"[FAIL] Thread {thread_id} (failure {fails}/{MAX_THREAD_FAILURES}): {e}", exc_info=True)
+            if fails >= MAX_THREAD_FAILURES:
+                logger.error(f"[GIVE UP] Thread {thread_id} failed {fails} times; skipping it from now on.")
 
     update_processing_status(
         db_conn,
@@ -1967,7 +1898,13 @@ def load_processed_thread_ids():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT thread_id FROM threads WHERE thread_id IS NOT NULL AND thread_id != ''")
+        # Bounded to the search window (7 days) plus a day of slack; the full table
+        # was being read on every 45-60s poll and grows without limit.
+        cursor.execute(
+            "SELECT DISTINCT thread_id FROM threads "
+            "WHERE thread_id IS NOT NULL AND thread_id != '' "
+            "AND (date IS NULL OR date > NOW() - INTERVAL 8 DAY)"
+        )
         ids = set(row[0] for row in cursor.fetchall())
         conn.close()
         return ids
@@ -2010,7 +1947,14 @@ def run_continuous():
             all_threads = search_threads(gmail_service, current_query)
             
             # Filter ONLY threads that are not yet stored in MySQL DB
-            unprocessed_threads = [t for t in all_threads if t["id"] not in processed_thread_ids]
+            # Skip threads already stored, and threads that have failed too many times.
+            # Without the second filter a permanently-failing thread is re-downloaded,
+            # re-uploaded and re-OCR'd on every single poll.
+            unprocessed_threads = [
+                t for t in all_threads
+                if t["id"] not in processed_thread_ids
+                and _THREAD_FAILURES.get(t["id"], 0) < MAX_THREAD_FAILURES
+            ]
 
             if not unprocessed_threads:
                 logger.info(f"All {len(all_threads)} threads up-to-date. Listening for new incoming emails (check #{iteration_count})...")
