@@ -67,7 +67,9 @@ EXECUTOR: Optional[concurrent.futures.ProcessPoolExecutor] = None
 def get_executor() -> concurrent.futures.ProcessPoolExecutor:
     global EXECUTOR
     if EXECUTOR is None:
-        EXECUTOR = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+        # Cap worker count to 2 processes to prevent CPU saturation across all cores
+        workers = min(2, max(1, (os.cpu_count() or 2) - 1))
+        EXECUTOR = concurrent.futures.ProcessPoolExecutor(max_workers=workers)
         atexit.register(_shutdown_executor)          # FIX 5: clean shutdown
     return EXECUTOR
 
@@ -1019,7 +1021,8 @@ def extract_text_from_pdf(file_bytes: bytes, file_name: str) -> str:
         try:
             from pdf2image import convert_from_bytes
             import pytesseract
-            images = convert_from_bytes(file_bytes, dpi=150)
+            # Limit page OCR to first 5 pages and 120 DPI for faster/lower CPU extraction
+            images = convert_from_bytes(file_bytes, dpi=120, first_page=1, last_page=5)
             for image in images:
                 text = pytesseract.image_to_string(image.convert('L'))
                 if text and text.strip():
@@ -1051,11 +1054,13 @@ def extract_text_from_image(file_bytes: bytes, file_name: str) -> str:
         image = ImageEnhance.Contrast(image).enhance(2.0)
         image = ImageEnhance.Sharpness(image).enhance(2.0)
         results = []
-        for cfg in ['--psm 6', '--psm 3', '--psm 4', '--oem 1 --psm 6']:
+        # Try fast PSM 6 first, and exit immediately if text is extracted
+        for cfg in ['--psm 6', '--psm 3']:
             try:
                 text = pytesseract.image_to_string(image, config=cfg).strip()
-                if text and text not in results:
+                if text:
                     results.append(text)
+                    break  # Early exit on successful extraction
             except Exception as e:
                 logger.debug(f"OCR config {cfg} failed: {e}")
         return "\n\n[OCR Results]\n\n".join(results) if results else "[No text found in image]"
@@ -2002,7 +2007,7 @@ def run_continuous():
 
             if not unprocessed_threads:
                 logger.info(f"All {len(all_threads)} threads up-to-date. Listening for new incoming emails (check #{iteration_count})...")
-                time.sleep(15)
+                time.sleep(45)
                 continue
 
             logger.info(f"\n{'#'*70}\nBATCH #{batch_number}: Processing {len(unprocessed_threads)} new incoming threads (out of {len(all_threads)} total)\n{'#'*70}\n")
