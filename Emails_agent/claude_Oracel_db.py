@@ -56,6 +56,7 @@ from googleapiclient.http import MediaIoBaseUpload
 # -----------------------------------------------------------------------
 BODY_MAX_CHARS        = 100_000
 OCR_MAX_CHARS         = 200_000
+MAX_EXTRACT_BYTES     = 25 * 1024 * 1024   # 25MB: upload to Drive, but skip OCR/parse
 POLL_INTERVAL_SECONDS = 60
 
 # -----------------------------------------------------------------------
@@ -562,7 +563,11 @@ def get_thread_messages(gmail_service, thread_id: str) -> List[dict]:
     max_retries = 5
     for attempt in range(max_retries):
         try:
-            thread = gmail_service.users().threads().get(userId="me", id=thread_id).execute()
+            # format="full" is the API default, but state it: this response already
+            # carries every message payload, so no per-message fetch is needed.
+            thread = gmail_service.users().threads().get(
+                userId="me", id=thread_id, format="full"
+            ).execute()
             return thread.get("messages", [])
         except Exception as e:
             err_str = str(e)
@@ -575,25 +580,6 @@ def get_thread_messages(gmail_service, thread_id: str) -> List[dict]:
                 logger.error(f"Failed to get thread {thread_id}: {e}")
                 return []
     return []
-
-def get_message_data(gmail_service, message_id: str) -> dict:
-    max_retries = 5
-    for attempt in range(max_retries):
-        try:
-            return gmail_service.users().messages().get(
-                userId="me", id=message_id, format="full"
-            ).execute()
-        except Exception as e:
-            err_str = str(e)
-            if ("rateLimitExceeded" in err_str or "userRateLimitExceeded" in err_str or 
-                "403" in err_str or "429" in err_str or "500" in err_str or "503" in err_str) and attempt < max_retries - 1:
-                wait_time = (2 ** attempt) + (random.randint(1, 1000) / 1000.0)
-                logger.warning(f"Encountered rate limit/error getting message {message_id}. Retrying in {wait_time:.2f}s (attempt {attempt+1}/{max_retries})...")
-                time.sleep(wait_time)
-            else:
-                logger.error(f"Failed to get message {message_id}: {e}")
-                return {"id": message_id, "payload": {"headers": [], "body": {}}}
-    return {"id": message_id, "payload": {"headers": [], "body": {}}}
 
 def get_latest_history_id_from_messages(messages: List[dict]) -> Optional[str]:
     latest = 0
@@ -741,7 +727,7 @@ def get_message_body(message: dict) -> str:
         return "\n\n".join(body_texts["html"]).strip()
     return ""
 
-def get_attachments(gmail_service, message: dict) -> List[dict]:
+def get_attachments(message: dict) -> List[dict]:
     attachments: List[dict] = []
     def find_attachments(parts):
         if not parts:
@@ -909,34 +895,36 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str) -> str:
 
 def extract_text_from_pdf(file_bytes: bytes, file_name: str) -> str:
     parts = []
+    # PyPDF2 first: it is much faster than pdfplumber on PDFs that carry a text layer,
+    # which is the common case. pdfplumber stays as the fallback for table-heavy files.
     try:
-        import pdfplumber
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            if pdf.metadata and pdf.metadata.get('encrypted'):
-                return f"[Password Protected PDF: {file_name}]"
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text and text.strip():
-                    parts.append(text.strip())
+        from PyPDF2 import PdfReader
+        reader = PdfReader(io.BytesIO(file_bytes))
+        if reader.is_encrypted:
+            return f"[Password Protected PDF: {file_name}]"
+        for page in reader.pages:
+            text = page.extract_text()
+            if text and text.strip():
+                parts.append(text.strip())
     except Exception as e:
         if 'password' in str(e).lower() or 'encrypt' in str(e).lower():
             return f"[Password Protected PDF: {file_name}]"
-        logger.debug(f"pdfplumber failed for {file_name}: {e}")
+        logger.debug(f"PyPDF2 failed for {file_name}: {e}")
 
     if not parts:
         try:
-            from PyPDF2 import PdfReader
-            reader = PdfReader(io.BytesIO(file_bytes))
-            if reader.is_encrypted:
-                return f"[Password Protected PDF: {file_name}]"
-            for page in reader.pages:
-                text = page.extract_text()
-                if text and text.strip():
-                    parts.append(text.strip())
+            import pdfplumber
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                if pdf.metadata and pdf.metadata.get('encrypted'):
+                    return f"[Password Protected PDF: {file_name}]"
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text and text.strip():
+                        parts.append(text.strip())
         except Exception as e:
             if 'password' in str(e).lower() or 'encrypt' in str(e).lower():
                 return f"[Password Protected PDF: {file_name}]"
-            logger.debug(f"PyPDF2 failed for {file_name}: {e}")
+            logger.debug(f"pdfplumber failed for {file_name}: {e}")
 
     if not parts and setup_tesseract():
         try:
@@ -1173,9 +1161,7 @@ def upsert_thread(db_conn, data: dict, existing: Optional[dict] = None):
         )
     db_conn.commit()
     cursor.close()
-
-    if is_new:
-        trigger_backend_tender_scan()
+    return is_new
 
 def update_processing_status(db_conn, **kwargs):
     cursor = db_conn.cursor()
@@ -1587,7 +1573,7 @@ def process_gmail_batch(
     )
 
     start_time     = time.time() * 1000
-    processed_count = important_count = failed_count = skipped_count = 0
+    processed_count = important_count = failed_count = skipped_count = inserted_count = 0
 
     for i, thread_summary in enumerate(batch_threads):
         thread_index = start_index + i + 1
@@ -1663,8 +1649,8 @@ def process_gmail_batch(
                 skipped_count += 1
                 continue
 
-            msg_datas = [get_message_data(gmail_service, m["id"]) for m in messages]
-            msg_datas = [md for md in msg_datas if md and isinstance(md, dict) and md.get("id")]
+            # get_thread_messages already returned full payloads; no refetch.
+            msg_datas = [m for m in messages if isinstance(m, dict) and m.get("id")]
             if not msg_datas:
                 logger.warning(f"No valid message payloads returned for thread {thread_id}")
                 continue
@@ -1712,6 +1698,7 @@ def process_gmail_batch(
             to_emails: Set[str] = set()
             body_parts: List[str] = []
             all_attachment_names: List[str] = []
+            thread_attachments: List[dict] = []
 
             for idx, msg_data in enumerate(msg_datas, 1):
                 mh = get_message_headers(msg_data)
@@ -1723,8 +1710,9 @@ def process_gmail_batch(
                 to = mh.get("to", "")
                 if to:
                     to_emails.update(extract_bare_emails(to))
-                for att in get_attachments(gmail_service, msg_data):
+                for att in get_attachments(msg_data):
                     all_attachment_names.append(att["filename"])
+                    thread_attachments.append(att)
 
             body_content = "\n\n".join(body_parts)
             # TEXT columns cap at 65535 bytes; an unbounded join on a large
@@ -1752,7 +1740,10 @@ def process_gmail_batch(
                 if importance_reasons:
                     logger.info(f"  Reasons: {', '.join(importance_reasons[:3])}")
 
-            thread_folder_id = get_or_create_thread_folder(drive_service, thread_id, root_folder_id)
+            # Most threads have no attachments; skip the list+create Drive round-trips.
+            thread_folder_id = None
+            if all_attachment_names:
+                thread_folder_id = get_or_create_thread_folder(drive_service, thread_id, root_folder_id)
 
             attachment_drive_link_cache: Dict[str, Optional[str]] = {}
             attachment_text_cache: Dict[str, str]                 = {}
@@ -1760,50 +1751,52 @@ def process_gmail_batch(
             processed_hashes: List[str]                            = []
             attachment_sections: List[str]                         = []
 
-            for msg_data in msg_datas:
-                for att in get_attachments(gmail_service, msg_data):
-                    fname = att["filename"]
-                    try:
-                        att_bytes = download_attachment(
-                            gmail_service, att["messageId"], att["attachmentId"]
-                        )
-                        att_hash = hashlib.sha256(att_bytes).hexdigest()
-                    except Exception as e:
-                        logger.error(f"  Download error for {fname}: {e}")
-                        attachment_sections.append(f"=== {fname} ===\n[Download error: {e}]")
-                        continue
+            for att in thread_attachments:
+                fname = att["filename"]
+                try:
+                    att_bytes = download_attachment(
+                        gmail_service, att["messageId"], att["attachmentId"]
+                    )
+                    att_hash = hashlib.sha256(att_bytes).hexdigest()
+                except Exception as e:
+                    logger.error(f"  Download error for {fname}: {e}")
+                    attachment_sections.append(f"=== {fname} ===\n[Download error: {e}]")
+                    continue
 
-                    if att_hash in attachment_drive_link_cache:
-                        drive_link = attachment_drive_link_cache[att_hash]
-                        ocr_text   = attachment_text_cache.get(att_hash, "")
-                        attachment_sections.append(
-                            f"\n{'='*60}\nATTACHMENT: {fname} (duplicate – reusing)\n"
-                            f"DRIVE LINK: {drive_link or 'Upload failed'}\n{'='*60}\n"
-                            f"{ocr_text or '[No extractable text]'}\n"
-                        )
-                        continue
+                if att_hash in attachment_drive_link_cache:
+                    drive_link = attachment_drive_link_cache[att_hash]
+                    ocr_text   = attachment_text_cache.get(att_hash, "")
+                    attachment_sections.append(
+                        f"\n{'='*60}\nATTACHMENT: {fname} (duplicate – reusing)\n"
+                        f"DRIVE LINK: {drive_link or 'Upload failed'}\n{'='*60}\n"
+                        f"{ocr_text or '[No extractable text]'}\n"
+                    )
+                    continue
 
-                    processed_hashes.append(att_hash)
-                    attachment_name_by_hash[att_hash] = fname
-                    try:
-                        logger.info(f"  Processing: {fname}")
-                        drive_link = upload_to_drive_dedup(
-                            drive_service, att_bytes, fname, thread_folder_id
-                        )
-                        doc_text   = extract_text_locally(att_bytes, fname)
-                        attachment_drive_link_cache[att_hash] = drive_link
-                        attachment_text_cache[att_hash]       = doc_text
-                        attachment_sections.append(
-                            f"\n{'='*60}\nATTACHMENT: {fname}\n"
-                            f"DRIVE LINK: {drive_link or 'Upload failed'}\n"
-                            f"FILE SIZE:  {len(att_bytes)} bytes\n{'='*60}\n"
-                            f"{doc_text or '[No extractable text]'}\n"
-                        )
-                    except Exception as e:
-                        logger.error(f"  Error processing {fname}: {e}")
-                        attachment_drive_link_cache[att_hash] = None
-                        attachment_text_cache[att_hash]       = f"[Error: {e}]"
-                        attachment_sections.append(f"=== {fname} ===\n[Error: {e}]")
+                processed_hashes.append(att_hash)
+                attachment_name_by_hash[att_hash] = fname
+                try:
+                    logger.info(f"  Processing: {fname}")
+                    drive_link = upload_to_drive_dedup(
+                        drive_service, att_bytes, fname, thread_folder_id
+                    )
+                    if len(att_bytes) > MAX_EXTRACT_BYTES:
+                        doc_text = f"[Extraction skipped - {len(att_bytes)} bytes exceeds {MAX_EXTRACT_BYTES} limit]"
+                    else:
+                        doc_text = extract_text_locally(att_bytes, fname)
+                    attachment_drive_link_cache[att_hash] = drive_link
+                    attachment_text_cache[att_hash]       = doc_text
+                    attachment_sections.append(
+                        f"\n{'='*60}\nATTACHMENT: {fname}\n"
+                        f"DRIVE LINK: {drive_link or 'Upload failed'}\n"
+                        f"FILE SIZE:  {len(att_bytes)} bytes\n{'='*60}\n"
+                        f"{doc_text or '[No extractable text]'}\n"
+                    )
+                except Exception as e:
+                    logger.error(f"  Error processing {fname}: {e}")
+                    attachment_drive_link_cache[att_hash] = None
+                    attachment_text_cache[att_hash]       = f"[Error: {e}]"
+                    attachment_sections.append(f"=== {fname} ===\n[Error: {e}]")
 
             ocr_text = "\n\n".join(attachment_sections) if attachment_sections else "[No Attachments]"
             if len(ocr_text) > OCR_MAX_CHARS:
@@ -1842,18 +1835,21 @@ def process_gmail_batch(
                 "user_labels":        extract_gmail_labels(msg_datas, gmail_service=gmail_service),
             }
 
-            upsert_thread(db_conn, row_data, existing_rows.get(thread_id))
+            if upsert_thread(db_conn, row_data, existing_rows.get(thread_id)):
+                inserted_count += 1
             processed_count += 1
 
-            update_processing_status(
-                db_conn,
-                total_threads=total_threads,
-                processed_threads=thread_index,
-                important_threads=important_count,
-                last_thread_id=thread_id,
-                last_processed_date=parse_email_date(date_str),
-                batch_number=(start_index // batch_size) + 1,
-            )
+            # Heartbeat only; the batch-end call below writes the final counts.
+            if thread_index % 50 == 0:
+                update_processing_status(
+                    db_conn,
+                    total_threads=total_threads,
+                    processed_threads=thread_index,
+                    important_threads=important_count,
+                    last_thread_id=thread_id,
+                    last_processed_date=parse_email_date(date_str),
+                    batch_number=(start_index // batch_size) + 1,
+                )
             logger.info(
                 f"  [OK] {processed_count}/{len(batch_threads)} "
                 f"(important={important_count}, skipped={skipped_count})"
@@ -1866,6 +1862,10 @@ def process_gmail_batch(
             logger.error(f"[FAIL] Thread {thread_id} (failure {fails}/{MAX_THREAD_FAILURES}): {e}", exc_info=True)
             if fails >= MAX_THREAD_FAILURES:
                 logger.error(f"[GIVE UP] Thread {thread_id} failed {fails} times; skipping it from now on.")
+
+    # One scan trigger for the whole batch instead of one blocking POST per inserted row.
+    if inserted_count:
+        trigger_backend_tender_scan()
 
     update_processing_status(
         db_conn,
