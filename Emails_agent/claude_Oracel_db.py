@@ -1370,7 +1370,6 @@ def load_all_email_mapping(db_conn) -> Dict[str, Tuple[str, str, str]]:
 
 _INTERNAL_CATEGORY = 'internal'
 _COMMON_DOMAINS = {'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'yahoo.co.in', 'ymail.com', 'icloud.com', 'rediffmail.com'}
-_INTERNAL_DOMAINS = {'laserpowerinfra.com', 'gmdalui.co.in', 'uicwires.com', 'lasercables.com', 'uicudyog.com', 'uicinfra.com'}
 _INTERNAL_DOMAIN_COMPANY_MAP = {
     'laserpowerinfra.com': 'laser',
     'lasercables.com': 'laser',
@@ -1378,11 +1377,13 @@ _INTERNAL_DOMAIN_COMPANY_MAP = {
     'uicudyog.com': 'UIC',
     'uicinfra.com': 'UIC',
     'gmdalui.co.in': 'GMD',
+    'gmd.co.in': 'GMD',
     'ceebuildcompany.com': 'CEEBUILD',
     'dailmerindustries.com': 'DAILMER',
     'maxcabindustries.com': 'MAXCAB',
     'bhuveestenovate.com': 'BHUVEE',
 }
+_INTERNAL_DOMAINS = set(_INTERNAL_DOMAIN_COMPANY_MAP.keys())
 
 def _get_participant_company(email_str: str, email_map: Dict[str, Tuple[str, str, str]]) -> Optional[str]:
     em = email_str.lower().strip()
@@ -1398,7 +1399,7 @@ def _get_participant_company(email_str: str, email_map: Dict[str, Tuple[str, str
         return 'laser'
     if 'uic' in em:
         return 'UIC'
-    if 'gmd' in em:
+    if 'gmd' in em or 'gmdalui' in em:
         return 'GMD'
     return None
 
@@ -1413,10 +1414,7 @@ def resolve_company_category(
     Strict Rules:
       1. Category = 'INTERNAL' ONLY WHEN ALL participants (Sender, To, AND CC) are internal staff/domains.
       2. If ANY participant in (Sender, To, CC) is external:
-         a. Check if any external participant's exact email is in email_map as non-internal -> use mapped company/category.
-         b. Check if domain matches any non-internal entry in email_map -> use domain-mapped company.
-         c. Check if any participant matches an internal company domain/keyword -> assign company, category='OUTSIDER', sub_category='OUTSIDER'.
-         d. Otherwise return ('Outsider', 'Outsider', 'Outsider').
+         Category = 'Undefined', Sub-Category = 'Undefined' with appropriate company assigned.
     """
     cc_set = set(cc_emails) if cc_emails else set()
     to_set = set(to_emails) if to_emails else set()
@@ -1433,8 +1431,6 @@ def resolve_company_category(
         domain = em.split('@')[-1] if '@' in em else ''
         if domain in _INTERNAL_DOMAINS:
             return True
-        if 'laserpower' in em or 'lasercables' in em:
-            return True
         return False
 
     if all_participants:
@@ -1447,8 +1443,7 @@ def resolve_company_category(
                     return mapped
             return ("laser", "INTERNAL", "INTERNAL")
 
-        # Not all participants are internal (at least 1 external participant exists)
-        # Find company from participants
+        # Not all participants are internal -> Category = Undefined
         for e in sorted(all_participants):
             comp = _get_participant_company(e, email_map)
             if comp:
