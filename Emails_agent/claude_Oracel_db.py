@@ -154,6 +154,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Mute non-fatal font/width warnings from third-party PDF libraries
+for pdf_log in ("pdfminer", "pdfminer.pdfinterp", "pdfminer.pdfpage", "pypdf", "PyPDF2", "pdfplumber", "PIL"):
+    logging.getLogger(pdf_log).setLevel(logging.ERROR)
+
 # -----------------------------------------------------------------------
 # ALLOWED DB COLUMNS  (FIX 6: prevent accidental bad SQL)
 # -----------------------------------------------------------------------
