@@ -24,6 +24,9 @@ COPY . .
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1
+# Tesseract is built with OpenMP and will otherwise fan out across every core,
+# saturating the host. One thread per worker keeps OCR concurrency at the pool size.
+ENV OMP_THREAD_LIMIT=1
 
 # Command to run continuous email ingestion pipeline
 CMD ["python", "claude_Oracel_db.py", "--mode", "continuous"]
