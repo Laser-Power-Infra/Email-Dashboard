@@ -57,8 +57,11 @@ services:
       dockerfile: Dockerfile
     container_name: match_emails_agent
     restart: always
+    # Backstop so OCR work can never take the whole host again.
+    cpus: 2
     environment:
       - OLLAMA_HOST=http://host.docker.internal:11434
+      - OMP_THREAD_LIMIT=1
     volumes:
       - ./Emails_agent:/app
       - ./:/app/root_config:ro
