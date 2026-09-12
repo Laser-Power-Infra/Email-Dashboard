@@ -1368,7 +1368,25 @@ def resolve_company_category(
             # 100% of participants (Sender, To, CC) are internal -> mark as INTERNAL
             return (comp if comp.lower() != 'outsider' else "laser", "INTERNAL", "INTERNAL")
 
-    # Not all participants are internal -> Category = Undefined
+    # Priority 1: Check Receiver (To) emails against email_map
+    for e in sorted(to_set):
+        em = e.lower().strip()
+        mapped = email_map.get(em)
+        if mapped:
+            _, cat, sub_cat = mapped
+            if cat and cat.strip() and cat.strip().lower() not in ('internal', 'undefined', 'outsider'):
+                return (comp, cat.strip(), (sub_cat or 'Undefined').strip())
+
+    # Priority 2: Check CC emails against email_map
+    for e in sorted(cc_set):
+        em = e.lower().strip()
+        mapped = email_map.get(em)
+        if mapped:
+            _, cat, sub_cat = mapped
+            if cat and cat.strip() and cat.strip().lower() not in ('internal', 'undefined', 'outsider'):
+                return (comp, cat.strip(), (sub_cat or 'Undefined').strip())
+
+    # Not matched -> Category = Undefined
     return (comp, "Undefined", "Undefined")
 
 # ponytail: in-memory only, resets on restart. Move to a DB column if a poison
