@@ -1973,8 +1973,8 @@ async function runSync(forceFullSyncRequested = false) {
           // Log match relationship in SQL
           const insertMatchQuery = `
             INSERT IGNORE INTO tender_matches 
-            (docket_no, tender_no, thread_db_id, thread_id, matched_token, confidence, tender_status, reply_required, reply_reason, deadline_date) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (docket_no, tender_no, thread_db_id, thread_id, matched_token, confidence, tender_status, reply_required, reply_reason, deadline_date, company) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `;
           const [result] = await conn.execute(insertMatchQuery, [
             match.docketNo,
@@ -1986,7 +1986,8 @@ async function runSync(forceFullSyncRequested = false) {
             tenderStatusVal,
             replyDecision.required ? 1 : 0,
             replyDecision.reason,
-            final_save_deadline
+            final_save_deadline,
+            thread.company || 'laser'
           ]);
           
           if (result.affectedRows > 0) {
