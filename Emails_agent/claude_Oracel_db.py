@@ -1386,6 +1386,17 @@ def resolve_company_category(
             if cat and cat.strip() and cat.strip().lower() not in ('internal', 'undefined', 'outsider'):
                 return (comp, cat.strip(), (sub_cat or 'Undefined').strip())
 
+    # Priority 3: Check Sender emails (if sender is external & mapped to a defined category)
+    for e in sorted(senders_set):
+        em = e.lower().strip()
+        if _is_internal_email(em):
+            continue  # If sender is internal, assign Undefined as requested
+        mapped = email_map.get(em)
+        if mapped:
+            _, cat, sub_cat = mapped
+            if cat and cat.strip() and cat.strip().lower() not in ('internal', 'undefined', 'outsider'):
+                return (comp, cat.strip(), (sub_cat or 'Undefined').strip())
+
     # Not matched -> Category = Undefined
     return (comp, "Undefined", "Undefined")
 
