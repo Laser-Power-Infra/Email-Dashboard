@@ -1310,12 +1310,12 @@ def _get_participant_company(email_str: str, email_map: Dict[str, Tuple[str, str
     em = email_str.lower().strip()
     if not em:
         return None
-    mapped = email_map.get(em)
-    if mapped and mapped[0] and mapped[0].lower() != 'outsider':
-        return mapped[0]
     domain = em.split('@')[-1] if '@' in em else ''
     if domain in _INTERNAL_DOMAIN_COMPANY_MAP:
         return _INTERNAL_DOMAIN_COMPANY_MAP[domain]
+    mapped = email_map.get(em)
+    if mapped and mapped[0] and mapped[0].lower() != 'outsider':
+        return mapped[0]
     if 'laserpower' in em or 'lasercables' in em:
         return 'laser'
     if 'uic' in em:
