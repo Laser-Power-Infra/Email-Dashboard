@@ -505,7 +505,7 @@ function App() {
     'Capital Supplyer': '#f59e0b',
     'MISC Supplyer': '#8b5cf6',
     'RM': '#ec4899',
-    'Logistic Head': '#f43f5e',
+    'Logistic': '#f43f5e',
     'Service / Job workers': '#14b8a6',
     'Undefined': '#6b7280',
     'Banking & Finance': '#10b981',
