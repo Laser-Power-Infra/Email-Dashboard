@@ -1342,13 +1342,40 @@ def resolve_company_category(
     senders_set = set(sender_emails) if sender_emails else set()
     all_participants = senders_set | to_set | cc_set
 
-    # 1. Determine company
-    comp = 'laser'
-    for e in sorted(all_participants):
-        p_comp = _get_participant_company(e, email_map)
-        if p_comp and p_comp.lower() != 'outsider':
-            comp = p_comp
-            break
+    # 1. Determine company (Receiver-First priority: non-Laser group company > Laser > Sender fallback > Outsider)
+    recipients = to_set | cc_set
+    recip_companies = set()
+    for e in recipients:
+        c = _get_participant_company(e, email_map)
+        if c and c.lower() != 'outsider':
+            recip_companies.add(c)
+
+    comp = None
+    if recip_companies:
+        # Non-laser group companies take precedence over Laser if mixed in receivers
+        for cp in ['GMD', 'UIC', 'CEEBUILD', 'DAILMER', 'MAXCAB', 'BHUVEE']:
+            for rc in recip_companies:
+                if rc.lower() == cp.lower():
+                    comp = rc
+                    break
+            if comp:
+                break
+        if not comp:
+            for rc in recip_companies:
+                if rc.lower() == 'laser':
+                    comp = 'laser'
+                    break
+
+    if not comp:
+        # Sender Fallback
+        for s in senders_set:
+            c = _get_participant_company(s, email_map)
+            if c and c.lower() != 'outsider':
+                comp = c
+                break
+
+    if not comp:
+        comp = 'Outsider'
 
     def _is_internal_email(email_str: str) -> bool:
         em = email_str.lower().strip()
