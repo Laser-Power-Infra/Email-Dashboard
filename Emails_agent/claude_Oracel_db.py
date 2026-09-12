@@ -154,6 +154,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Mute non-fatal font/width warnings from third-party PDF libraries
+for pdf_log in ("pdfminer", "pdfminer.pdfinterp", "pdfminer.pdfpage", "pypdf", "PyPDF2", "pdfplumber", "PIL"):
+    logging.getLogger(pdf_log).setLevel(logging.ERROR)
+
 # -----------------------------------------------------------------------
 # ALLOWED DB COLUMNS  (FIX 6: prevent accidental bad SQL)
 # -----------------------------------------------------------------------
@@ -1338,13 +1342,40 @@ def resolve_company_category(
     senders_set = set(sender_emails) if sender_emails else set()
     all_participants = senders_set | to_set | cc_set
 
-    # 1. Determine company
-    comp = 'laser'
-    for e in sorted(all_participants):
-        p_comp = _get_participant_company(e, email_map)
-        if p_comp and p_comp.lower() != 'outsider':
-            comp = p_comp
-            break
+    # 1. Determine company (Receiver-First priority: non-Laser group company > Laser > Sender fallback > Outsider)
+    recipients = to_set | cc_set
+    recip_companies = set()
+    for e in recipients:
+        c = _get_participant_company(e, email_map)
+        if c and c.lower() != 'outsider':
+            recip_companies.add(c)
+
+    comp = None
+    if recip_companies:
+        # Non-laser group companies take precedence over Laser if mixed in receivers
+        for cp in ['GMD', 'UIC', 'CEEBUILD', 'DAILMER', 'MAXCAB', 'BHUVEE']:
+            for rc in recip_companies:
+                if rc.lower() == cp.lower():
+                    comp = rc
+                    break
+            if comp:
+                break
+        if not comp:
+            for rc in recip_companies:
+                if rc.lower() == 'laser':
+                    comp = 'laser'
+                    break
+
+    if not comp:
+        # Sender Fallback
+        for s in senders_set:
+            c = _get_participant_company(s, email_map)
+            if c and c.lower() != 'outsider':
+                comp = c
+                break
+
+    if not comp:
+        comp = 'Outsider'
 
     def _is_internal_email(email_str: str) -> bool:
         em = email_str.lower().strip()
@@ -1364,7 +1395,36 @@ def resolve_company_category(
             # 100% of participants (Sender, To, CC) are internal -> mark as INTERNAL
             return (comp if comp.lower() != 'outsider' else "laser", "INTERNAL", "INTERNAL")
 
-    # Not all participants are internal -> Category = Undefined
+    # Priority 1: Check Receiver (To) emails against email_map
+    for e in sorted(to_set):
+        em = e.lower().strip()
+        mapped = email_map.get(em)
+        if mapped:
+            _, cat, sub_cat = mapped
+            if cat and cat.strip() and cat.strip().lower() not in ('internal', 'undefined', 'outsider'):
+                return (comp, cat.strip(), (sub_cat or 'Undefined').strip())
+
+    # Priority 2: Check CC emails against email_map
+    for e in sorted(cc_set):
+        em = e.lower().strip()
+        mapped = email_map.get(em)
+        if mapped:
+            _, cat, sub_cat = mapped
+            if cat and cat.strip() and cat.strip().lower() not in ('internal', 'undefined', 'outsider'):
+                return (comp, cat.strip(), (sub_cat or 'Undefined').strip())
+
+    # Priority 3: Check Sender emails (if sender is external & mapped to a defined category)
+    for e in sorted(senders_set):
+        em = e.lower().strip()
+        if _is_internal_email(em):
+            continue  # If sender is internal, assign Undefined as requested
+        mapped = email_map.get(em)
+        if mapped:
+            _, cat, sub_cat = mapped
+            if cat and cat.strip() and cat.strip().lower() not in ('internal', 'undefined', 'outsider'):
+                return (comp, cat.strip(), (sub_cat or 'Undefined').strip())
+
+    # Not matched -> Category = Undefined
     return (comp, "Undefined", "Undefined")
 
 # ponytail: in-memory only, resets on restart. Move to a DB column if a poison
