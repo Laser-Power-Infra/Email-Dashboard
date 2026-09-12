@@ -4177,53 +4177,76 @@ async function backfillThreadsCompanyAndCodeword(conn) {
       }
 
       // Strict Direct DB Category & Sub-Category Resolution
-      const allRecipients = Array.from(new Set([...toEmails, ...ccEmails]));
+      const allParticipants = Array.from(new Set([...senderEmails, ...toEmails, ...ccEmails]));
+      let is100PercentInternal = false;
+
+      if (allParticipants.length > 0) {
+        let allInternal = true;
+        for (const p of allParticipants) {
+          const cand = resolveEmailCandidate(p);
+          const catUpper = cand && cand.category ? cand.category.toUpperCase() : '';
+          const isDomInternal = Boolean(fallbackCompanyFromEmail(p));
+          const localP = String(p).split('@')[0];
+          const isKwInternal = COMPANY_KEYWORD_PATTERNS.some(pat => pat.test(localP));
+          if (catUpper !== 'INTERNAL' && catUpper !== 'STAFF' && !isDomInternal && !isKwInternal) {
+            allInternal = false;
+            break;
+          }
+        }
+        is100PercentInternal = allInternal;
+      }
+
       let finalCategory = null;
       let finalSubCategory = null;
 
-      if (allRecipients.length > 0) {
-        let allInternal = true;
-        let nonInternalCand = null;
-        let internalCand = null;
-
-        for (const r of allRecipients) {
-          const cand = resolveEmailCandidate(r);
-          const catUpper = cand && cand.category ? cand.category.toUpperCase() : '';
-          const isDomInternal = Boolean(fallbackCompanyFromEmail(r));
-          const localP = String(r).split('@')[0];
-          const isKwInternal = COMPANY_KEYWORD_PATTERNS.some(pat => pat.test(localP));
-
-          if (catUpper === 'INTERNAL' || catUpper === 'STAFF' || isDomInternal || isKwInternal) {
-            if (!internalCand && cand) internalCand = cand;
-          } else {
-            allInternal = false;
-            if (!nonInternalCand && cand) nonInternalCand = cand;
+      if (is100PercentInternal) {
+        finalCategory = 'INTERNAL';
+        finalSubCategory = 'INTERNAL';
+      } else {
+        // Priority 1: Check Receiver (To:) emails against aeMap
+        for (const e of toEmails) {
+          const cand = resolveEmailCandidate(e);
+          if (cand && cand.category && !['INTERNAL', 'UNDEFINED', 'OUTSIDER', 'STAFF'].includes(cand.category.toUpperCase())) {
+            finalCategory = cand.category;
+            finalSubCategory = cand.subCategory || 'Undefined';
+            break;
           }
         }
-
-        if (allInternal) {
-          finalCategory = 'INTERNAL';
-          finalSubCategory = internalCand ? internalCand.subCategory : null;
-        } else {
-          finalCategory = (nonInternalCand && nonInternalCand.category) ? nonInternalCand.category : 'OUTSIDER';
-          finalSubCategory = (nonInternalCand && nonInternalCand.subCategory) ? nonInternalCand.subCategory : null;
+        // Priority 2: Check CC (Cc:) emails against aeMap
+        if (!finalCategory) {
+          for (const e of ccEmails) {
+            const cand = resolveEmailCandidate(e);
+            if (cand && cand.category && !['INTERNAL', 'UNDEFINED', 'OUTSIDER', 'STAFF'].includes(cand.category.toUpperCase())) {
+              finalCategory = cand.category;
+              finalSubCategory = cand.subCategory || 'Undefined';
+              break;
+            }
+          }
         }
-      } else if (senderEmails.length > 0) {
-        // Sender Fallback for Category if no recipients in To/CC
-        const senderCand = resolveEmailCandidate(senderEmails[0]);
-        if (senderCand && senderCand.category) {
-          finalCategory = senderCand.category;
-          finalSubCategory = senderCand.subCategory || null;
-        } else {
+        // Priority 3: Check Sender (From:) if sender is external & mapped to a valid category
+        if (!finalCategory) {
+          for (const s of senderEmails) {
+            const isDomInternal = Boolean(fallbackCompanyFromEmail(s));
+            if (isDomInternal) continue; // Internal sender defaults to OUTSIDER
+            const cand = resolveEmailCandidate(s);
+            if (cand && cand.category && !['INTERNAL', 'UNDEFINED', 'OUTSIDER', 'STAFF'].includes(cand.category.toUpperCase())) {
+              finalCategory = cand.category;
+              finalSubCategory = cand.subCategory || 'Undefined';
+              break;
+            }
+          }
+        }
+        if (!finalCategory) {
           finalCategory = 'OUTSIDER';
+          finalSubCategory = 'OUTSIDER';
         }
       }
 
       updates.push({ 
         id: t.id, 
         company: finalCompany, 
-        category: finalCategory || 'Outsider', 
-        sub_category: finalSubCategory || null 
+        category: finalCategory, 
+        sub_category: finalSubCategory 
       });
     }
 
