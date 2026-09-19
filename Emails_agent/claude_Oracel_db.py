@@ -44,6 +44,7 @@ from email.utils import parsedate_to_datetime          # FIX 10: top-level impor
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import mysql.connector
+import requests
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -103,6 +104,11 @@ MYSQL_DATABASE = _cfg.get("mysql", "database", fallback=None) or _require("mysql
 MYSQL_PORT     = _cfg.getint("mysql", "port",  fallback=3306)
 
 DRIVE_FOLDER_ID = _cfg.get("drive", "folder_id", fallback=None) or _require("drive", "folder_id")
+
+WEBHOOK_ENABLED = _cfg.getboolean("webhook", "enabled", fallback=True)
+PO_WEBHOOK_URL  = _cfg.get("webhook", "po_webhook_url", fallback="http://127.0.0.1:5000/api/po-release")
+PO_PAYLOAD_MODE = _cfg.get("webhook", "payload_mode", fallback="multi_file")
+GEM_ID_REGEX    = re.compile(r'GEMC-[0-9]{10,16}|GEM/[0-9/A-Z_-]{8,30}|GEMC[0-9]{10,16}', re.IGNORECASE)
 
 print(f"Using MySQL host={MYSQL_HOST}, user={MYSQL_USER}, database={MYSQL_DATABASE}, port={MYSQL_PORT}")
 
@@ -303,6 +309,21 @@ def init_db():
                 )
             logger.info("Inserted default email categories.")
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS gem_po_registry (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                gem_id VARCHAR(255) NOT NULL,
+                file_name VARCHAR(512) NOT NULL,
+                drive_link VARCHAR(1024),
+                thread_id VARCHAR(255),
+                dispatched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status_code INT DEFAULT 200,
+                webhook_response TEXT,
+                UNIQUE KEY uq_gem_po_file (gem_id(150), file_name(250)),
+                INDEX idx_gem_id (gem_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+        """)
+
         conn.commit()
         logger.info("Database tables are ready.")
     except mysql.connector.Error as err:
@@ -317,6 +338,176 @@ def init_db():
     finally:
         cursor.close()
         conn.close()
+
+# -----------------------------------------------------------------------
+# PO WEBHOOK HELPERS
+# -----------------------------------------------------------------------
+def is_po_in_registry(db_conn, gem_id: str, file_name: str) -> bool:
+    """Check if a (gem_id, file_name) combination has already been successfully dispatched."""
+    if not db_conn or not db_conn.is_connected():
+        return False
+    try:
+        cursor = db_conn.cursor()
+        cursor.execute(
+            "SELECT id FROM gem_po_registry WHERE gem_id = %s AND file_name = %s LIMIT 1",
+            (gem_id, file_name)
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return bool(row)
+    except Exception as e:
+        logger.error(f"Error checking gem_po_registry for {gem_id} / {file_name}: {e}")
+        return False
+
+def record_po_in_registry(db_conn, gem_id: str, file_name: str, drive_link: str, thread_id: str, status_code: int = 200, response_text: str = ""):
+    """Record a dispatched PO in the gem_po_registry table."""
+    if not db_conn or not db_conn.is_connected():
+        return
+    try:
+        cursor = db_conn.cursor()
+        cursor.execute(
+            """INSERT INTO gem_po_registry 
+               (gem_id, file_name, drive_link, thread_id, status_code, webhook_response)
+               VALUES (%s, %s, %s, %s, %s, %s)
+               ON DUPLICATE KEY UPDATE 
+               drive_link = VALUES(drive_link),
+               status_code = VALUES(status_code),
+               webhook_response = VALUES(webhook_response)""",
+            (gem_id, file_name, drive_link or "", thread_id or "", status_code, (response_text or "")[:1000])
+        )
+        db_conn.commit()
+        cursor.close()
+    except Exception as e:
+        logger.error(f"Error recording PO in registry for {gem_id} / {file_name}: {e}")
+
+def is_strict_po_order_pdf(filename: str, gem_id: str = "") -> bool:
+    """
+    STRICTLY identify if a file is a Purchase Order (PO) or GeM Contract PDF.
+    Returns False for all ordinary bid/tender documents, annexures, drawings, GTPs, etc.
+    """
+    if not filename:
+        return False
+    fn = filename.lower().strip()
+    if not fn.endswith(('.pdf', '.doc', '.docx')):
+        return False
+
+    disqualify_keywords = [
+        'gem-bidding', 'gem_bidding', 'bidding', 'bid_doc', 'bid document', 'bid.pdf',
+        'tender', 'nit', 'annexure', 'gtp', 'drawing', 'inspection', 'test certificate',
+        'tc_', '_tc.', 'bg format', 'emd', 'boq', 'sub-vendor', 'questionnaire',
+        'addendum', 'corrigendum', 'commercial evaluation', 'technical evaluation',
+        'pre-bid', 'prebid', 'query', 'clarification', 'credential'
+    ]
+    if any(dk in fn for dk in disqualify_keywords):
+        return False
+
+    if re.search(r'gemc?-?[0-9]{14,16}', fn):
+        return True
+
+    clean_gid = re.sub(r'[^a-z0-9]', '', (gem_id or '').lower())
+    clean_fn = re.sub(r'[^a-z0-9]', '', fn)
+    if clean_gid and clean_gid.startswith('gemc') and clean_gid in clean_fn:
+        return True
+
+    if re.search(r'\b(purchase[_\s-]?order|work[_\s-]?order|supply[_\s-]?order|order[_\s-]?copy)\b', fn):
+        return True
+    if re.search(r'(^|[\s_-])po[\s_-]', fn) or fn.startswith('po_') or fn.startswith('po-'):
+        return True
+
+    return False
+
+def is_valid_attachment(filename: str) -> bool:
+    """Disqualify initial tender/bid documents and email signature images."""
+    if not filename:
+        return False
+    fn = filename.lower().strip()
+    disqualify_bids = [
+        'gem-bidding', 'gem_bidding', 'bid.pdf', 'bid_doc', 'bid document', 'tender notice'
+    ]
+    if any(k in fn for k in disqualify_bids):
+        return False
+    if re.match(r'^image\d+\.(png|jpg|jpeg|gif|bmp)$', fn):
+        return False
+    if re.match(r'^screenshot \d+.*?\.(png|jpg|jpeg)$', fn):
+        return False
+    return True
+
+def send_po_release_webhook(gem_id: str, po_files: List[dict], thread_id: str = "") -> bool:
+    """
+    Sends an HTTP POST webhook request with the PO release details to external server.
+    po_files is a list of dicts: [{"name": file_name, "drive_link": drive_link}]
+    """
+    if not WEBHOOK_ENABLED or not PO_WEBHOOK_URL or not po_files:
+        return False
+
+    db_conn = None
+    try:
+        db_conn = get_db_connection()
+        new_files = []
+        for file_info in po_files:
+            fname = file_info.get("name") or file_info.get("file_name") or ""
+            if not fname or not is_valid_attachment(fname):
+                continue
+            if not is_po_in_registry(db_conn, gem_id, fname):
+                new_files.append({
+                    "name": fname,
+                    "drive_link": file_info.get("drive_link") or ""
+                })
+
+        if not new_files:
+            logger.info(f"[PO WEBHOOK SKIP] All PO files for {gem_id} already present in registry.")
+            return True
+
+        # Identify the primary PO Order PDF strictly (never treat bid documents or ordinary PDFs as POs)
+        po_file = next(
+            (f for f in new_files if is_strict_po_order_pdf(f.get("name", ""), gem_id)),
+            None
+        )
+        po_link = po_file["drive_link"] if po_file else None
+        po_name = po_file["name"] if po_file else ""
+
+        attachments_json = json.dumps([
+            {
+                "name": f.get("name") or "Doc",
+                "url": f.get("drive_link") or "",
+                "type": (f.get("name", "").split(".")[-1] if "." in f.get("name", "") else "pdf").lower()
+            }
+            for f in new_files if f.get("drive_link")
+        ])
+
+        payload = {
+            "gem_id": gem_id,
+            "order_pdf": po_link,
+            "drive_link": attachments_json,
+            "name": po_name,
+            "total_files": len(new_files),
+            "files": new_files
+        }
+
+        logger.info(f"[PO WEBHOOK DISPATCH] Sending {len(new_files)} PO file(s) for {gem_id} to {PO_WEBHOOK_URL}")
+        resp = requests.post(PO_WEBHOOK_URL, json=payload, timeout=5)
+        
+        status_code = resp.status_code
+        resp_text = resp.text[:500]
+
+        if status_code in (200, 201):
+            logger.info(f"[PO WEBHOOK SUCCESS] Server responded {status_code} for {gem_id}")
+            for pf in new_files:
+                record_po_in_registry(db_conn, gem_id, pf["name"], pf["drive_link"], thread_id, status_code, resp_text)
+            return True
+        else:
+            logger.warning(f"[PO WEBHOOK FAILED] Server responded {status_code} for {gem_id}: {resp_text}")
+            return False
+
+    except Exception as e:
+        logger.error(f"[PO WEBHOOK ERROR] Exception dispatching webhook for {gem_id}: {e}")
+        return False
+    finally:
+        if db_conn:
+            try:
+                db_conn.close()
+            except Exception:
+                pass
 
 # -----------------------------------------------------------------------
 # GOOGLE API AUTH
@@ -1898,6 +2089,20 @@ def process_gmail_batch(
             if upsert_thread(db_conn, row_data, existing_rows.get(thread_id)):
                 inserted_count += 1
             processed_count += 1
+
+            # GeM PO Release Webhook Integration
+            if file_names and drive_links:
+                combined_text_for_gem = f"{subject} {body_content[:5000]} {' '.join(file_names)} {ocr_text[:5000]}"
+                detected_gem_ids = set(GEM_ID_REGEX.findall(combined_text_for_gem))
+                if detected_gem_ids:
+                    po_files = [
+                        {"name": fname, "drive_link": dlink}
+                        for fname, dlink in zip(file_names, drive_links)
+                        if fname.lower().endswith((".pdf", ".doc", ".docx")) and dlink and is_valid_attachment(fname)
+                    ]
+                    if po_files:
+                        for gid in detected_gem_ids:
+                            send_po_release_webhook(gid, po_files, thread_id)
 
             # Heartbeat only; the batch-end call below writes the final counts.
             if thread_index % 50 == 0:
