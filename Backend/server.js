@@ -198,6 +198,58 @@ function getUtcRangeForIstDates(startDateStr, endDateStr) {
   return { startUtc, endUtc };
 }
 
+// Check if an attachment filename is an email signature / inline image / dummy thumbnail that should not be shown
+function isExcludedAttachment(filename) {
+  if (!filename || typeof filename !== 'string') return true;
+  const name = filename.trim().toLowerCase();
+  if (!name || name === '[no attachments]' || name === 'none' || name === '[no links]') return true;
+  
+  // 1. Common email signature / inline image filenames:
+  // e.g., image001.png, image002.jpg, image003.jpeg, image.png, image.jpg, image.gif, image.bmp, image (1).png
+  if (/^image\d*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^image00\d+.*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^image\s*\(\d+\)\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^screenshot[\w\s\-_().]*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^screen\s*shot[\w\s\-_().]*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^(logo|icon|sig|signature|banner|footer|header|social|facebook|linkedin|twitter|instagram|whatsapp|mail|clip_image)[\w\s\-_().]*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^(img|pic|picture)[\w\s\-_().]*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (['image.png', 'image.jpg', 'image.jpeg', 'image.gif', 'untitled.png', 'untitled.jpg', 'pasted_image.png'].includes(name)) return true;
+  
+  return false;
+}
+
+// Clean and sanitize attach_names & attach_links to exclude signature / dummy images
+function sanitizeEmailAttachments(email) {
+  if (!email) return email;
+  const attachNames = email.attach_names;
+  const attachLinks = email.attach_links;
+  if (!attachNames || attachNames === '[No Attachments]') {
+    return {
+      ...email,
+      attach_names: '',
+      attach_links: ''
+    };
+  }
+  const rawNames = String(attachNames).split(',').map(n => n.trim()).filter(Boolean);
+  const rawLinks = attachLinks && attachLinks !== '[No Links]' ? String(attachLinks).split(',').map(l => l.trim()) : [];
+  
+  const cleanNames = [];
+  const cleanLinks = [];
+  
+  rawNames.forEach((n, idx) => {
+    if (!isExcludedAttachment(n)) {
+      cleanNames.push(n);
+      cleanLinks.push(rawLinks[idx] || '');
+    }
+  });
+
+  return {
+    ...email,
+    attach_names: cleanNames.length > 0 ? cleanNames.join(', ') : '',
+    attach_links: cleanLinks.length > 0 ? cleanLinks.join(', ') : ''
+  };
+}
+
 const app = express();
 const PORT = process.env.PORT || 6003;
 console.log(`Starting Tender Email Sync Server on port ${PORT}...`);
@@ -2293,10 +2345,13 @@ app.get('/api/tenders/:rowNumber/emails', async (req, res) => {
     console.log(`[API] Query returned ${emails.length} emails.`);
     
     // Add processed ocr_snippet for details pane
-    const formattedEmails = emails.map(email => ({
-      ...email,
-      ocr_snippet: getOcrSnippet(email.ocr_text, email.matched_token || email.matchedToken || tenderNo || '')
-    }));
+    const formattedEmails = emails.map(email => {
+      const sanitized = sanitizeEmailAttachments(email);
+      return {
+        ...sanitized,
+        ocr_snippet: getOcrSnippet(sanitized.ocr_text, sanitized.matched_token || sanitized.matchedToken || tenderNo || '')
+      };
+    });
 
     res.json(formattedEmails);
   } catch (err) {
@@ -2649,14 +2704,15 @@ app.get('/api/matched-emails', async (req, res) => {
     const [[{ total }]] = await conn.execute(countQuery, countParams);
     const [emails] = await conn.execute(query, params);
     
-    // Parse companies from the company column and add ocr snippet
+    // Parse companies from the company column and add ocr snippet, sanitizing attachments
     const formattedEmails = emails.map(e => {
-      const companies = parseCompanies(e.company);
+      const sanitized = sanitizeEmailAttachments(e);
+      const companies = parseCompanies(sanitized.company);
       return {
-        ...e,
+        ...sanitized,
         companies,
         codewords: [],
-        ocr_snippet: getOcrSnippet(e.ocr_text, e.matched_token || e.matchedToken || '')
+        ocr_snippet: getOcrSnippet(sanitized.ocr_text, sanitized.matched_token || sanitized.matchedToken || '')
       };
     });
     
@@ -2696,10 +2752,11 @@ app.get('/api/emails/:id/reply-suggestion', async (req, res) => {
       return res.status(404).json({ error: 'Email thread not found in database.' });
     }
 
-    const email = rows[0];
+    const rawEmail = rows[0];
+    const email = sanitizeEmailAttachments(rawEmail);
     
-    // Parse attachments
-    const names = email.attach_names ? email.attach_names.split(',').map(n => n.trim()) : [];
+    // Parse clean attachments
+    const names = email.attach_names ? email.attach_names.split(',').map(n => n.trim()).filter(Boolean) : [];
     const links = email.attach_links ? email.attach_links.split(',').map(l => l.trim()) : [];
     const attachments = names.map((name, i) => ({ name, link: links[i] || '#' }));
 
@@ -3462,22 +3519,23 @@ app.get('/api/all-emails', async (req, res) => {
     const [rows] = await conn.execute(query, params);
 
     const processedRows = rows.map(email => {
-      const companies = parseCompanies(email.company);
+      const sanitized = sanitizeEmailAttachments(email);
+      const companies = parseCompanies(sanitized.company);
       let fallbackCompany = '';
-      if (!email.company || String(email.company).toLowerCase() === 'outsider') {
-        fallbackCompany = computeFallbackCompany(email.sender, email.to_details);
+      if (!sanitized.company || String(sanitized.company).toLowerCase() === 'outsider') {
+        fallbackCompany = computeFallbackCompany(sanitized.sender, sanitized.to_details);
       }
       const isFallback = Boolean(fallbackCompany);
 
-      const categoryLower = (email.category || '').toLowerCase();
+      const categoryLower = (sanitized.category || '').toLowerCase();
       if (categoryLower.includes('legal') || categoryLower.includes('sales')) {
-        const ruleDecision = getRuleBasedReplyDecision(email.subject, email.body, email.ai_summary);
+        const ruleDecision = getRuleBasedReplyDecision(sanitized.subject, sanitized.body, sanitized.ai_summary);
         if (ruleDecision.required) {
-          return { ...email, reply_required: 1, reply_reason: ruleDecision.reason, companies, fallback_company: fallbackCompany, is_fallback_company: isFallback, codewords: [] };
+          return { ...sanitized, reply_required: 1, reply_reason: ruleDecision.reason, companies, fallback_company: fallbackCompany, is_fallback_company: isFallback, codewords: [] };
         }
-        return { ...email, reply_required: 0, reply_reason: '', companies, fallback_company: fallbackCompany, is_fallback_company: isFallback, codewords: [] };
+        return { ...sanitized, reply_required: 0, reply_reason: '', companies, fallback_company: fallbackCompany, is_fallback_company: isFallback, codewords: [] };
       }
-      return { ...email, reply_required: 0, reply_reason: '', companies, fallback_company: fallbackCompany, is_fallback_company: isFallback, codewords: [] };
+      return { ...sanitized, reply_required: 0, reply_reason: '', companies, fallback_company: fallbackCompany, is_fallback_company: isFallback, codewords: [] };
     });
 
     // For Sales/Legal emails where regex did not detect urgent reply, run AI-based deeper check
@@ -3530,6 +3588,176 @@ app.get('/api/all-emails', async (req, res) => {
   }
 });
 
+// 10b. Get Export Mailbox emails (export@laserpowerinfra.com - sending & receiving)
+app.get('/api/export-emails', async (req, res) => {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const table = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const colSubject = process.env.DB_COL_SUBJECT || 'subject';
+    const colBody = process.env.DB_COL_BODY || 'body';
+    const colSender = process.env.DB_COL_SENDER || 'sender';
+    const colDate = process.env.DB_COL_DATE || 'date';
+
+    const {
+      mode = 'all', // 'all' | 'sent' | 'received'
+      search,
+      label,
+      category,
+      subCategory,
+      startDate,
+      endDate,
+      page = 1,
+      limit = 50,
+      sortOrder = 'desc'
+    } = req.query;
+
+    const targetEmail = 'export@laserpowerinfra.com';
+    const orderDir = sortOrder === 'asc' ? 'ASC' : 'DESC';
+    const offset = (Number(page) - 1) * Number(limit);
+
+    // Compute summary counts for the 3 tabs (All, Sent, Received)
+    const [allCountRes] = await conn.execute(
+      `SELECT COUNT(*) as total FROM \`${table}\` WHERE (${colSender} LIKE ? OR to_details LIKE ? OR cc_details LIKE ?)`,
+      [`%${targetEmail}%`, `%${targetEmail}%`, `%${targetEmail}%`]
+    );
+    const [sentCountRes] = await conn.execute(
+      `SELECT COUNT(*) as total FROM \`${table}\` WHERE ${colSender} LIKE ?`,
+      [`%${targetEmail}%`]
+    );
+    const [recvCountRes] = await conn.execute(
+      `SELECT COUNT(*) as total FROM \`${table}\` WHERE (to_details LIKE ? OR cc_details LIKE ?)`,
+      [`%${targetEmail}%`, `%${targetEmail}%`]
+    );
+
+    const allCount = allCountRes[0]?.total || 0;
+    const sentCount = sentCountRes[0]?.total || 0;
+    const receivedCount = recvCountRes[0]?.total || 0;
+
+    let query = `SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender,
+                        DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date_received,
+                        DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date,
+                        t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority, t.is_important, t.user_labels, t.attach_names, t.attach_links, 
+                        LEFT(t.${colBody}, 3000) as body,
+                        LEFT(t.${colBody}, 300) as body_preview 
+                 FROM \`${table}\` t`;
+    let countQuery = `SELECT COUNT(*) as total FROM \`${table}\` t`;
+
+    let conditions = [];
+    let params = [];
+
+    // Direction Mode Filtering
+    if (mode === 'sent') {
+      conditions.push(`t.${colSender} LIKE ?`);
+      params.push(`%${targetEmail}%`);
+    } else if (mode === 'received') {
+      conditions.push(`(t.to_details LIKE ? OR t.cc_details LIKE ?)`);
+      params.push(`%${targetEmail}%`, `%${targetEmail}%`);
+    } else {
+      // 'all'
+      conditions.push(`(t.${colSender} LIKE ? OR t.to_details LIKE ? OR t.cc_details LIKE ?)`);
+      params.push(`%${targetEmail}%`, `%${targetEmail}%`, `%${targetEmail}%`);
+    }
+
+    // Category / SubCategory Filtering
+    if (category) {
+      const catList = String(category).split(',').map(c => c.trim()).filter(Boolean);
+      if (catList.length > 0) {
+        const placeholders = catList.map(() => 'LOWER(?)').join(',');
+        conditions.push(`LOWER(t.category) IN (${placeholders})`);
+        params.push(...catList.map(c => c.toLowerCase()));
+      }
+    }
+
+    if (subCategory) {
+      const subList = String(subCategory).split(',').map(s => s.trim()).filter(Boolean);
+      if (subList.length > 0) {
+        const placeholders = subList.map(() => 'LOWER(?)').join(',');
+        conditions.push(`LOWER(t.sub_category) IN (${placeholders})`);
+        params.push(...subList.map(s => s.toLowerCase()));
+      }
+    }
+
+    // Custom Label Filtering
+    if (label) {
+      const lblList = String(label).split(',').map(l => l.trim()).filter(Boolean);
+      if (lblList.length > 0) {
+        const lblConditions = lblList.map(() => `FIND_IN_SET(?, REPLACE(user_labels, ', ', ',')) > 0`);
+        conditions.push(`(${lblConditions.join(' OR ')})`);
+        params.push(...lblList);
+      }
+    }
+
+    // Date Range Filtering
+    const { startUtc, endUtc } = getUtcRangeForIstDates(startDate, endDate);
+    if (startUtc) {
+      conditions.push(`t.${colDate} >= ?`);
+      params.push(startUtc);
+    }
+    if (endUtc) {
+      conditions.push(`t.${colDate} <= ?`);
+      params.push(endUtc);
+    }
+
+    // Search Filtering
+    if (search) {
+      conditions.push(`(t.${colSubject} LIKE ? OR t.${colSender} LIKE ? OR t.to_details LIKE ? OR t.cc_details LIKE ? OR t.${colBody} LIKE ? OR t.attach_names LIKE ?)`);
+      const searchParam = `%${search}%`;
+      params.push(searchParam, searchParam, searchParam, searchParam, searchParam, searchParam);
+    }
+
+    if (conditions.length > 0) {
+      const whereClause = ` WHERE ` + conditions.join(' AND ');
+      query += whereClause;
+      countQuery += whereClause;
+    }
+
+    query += ` ORDER BY CASE WHEN t.${colDate} IS NULL THEN 1 ELSE 0 END, t.${colDate} ${orderDir} LIMIT ${Number(limit)} OFFSET ${Number(offset)}`;
+
+    const [countRows] = await conn.execute(countQuery, params);
+    const filteredTotal = countRows[0]?.total || 0;
+
+    const [rows] = await conn.execute(query, params);
+
+    const processedRows = rows.map(email => {
+      const sanitized = sanitizeEmailAttachments(email);
+      const isSender = (sanitized.sender || '').toLowerCase().includes(targetEmail.toLowerCase());
+      const isRecipient = ((sanitized.to_details || '') + ' ' + (sanitized.cc_details || '')).toLowerCase().includes(targetEmail.toLowerCase());
+      
+      let direction = 'received';
+      if (isSender && isRecipient) direction = 'both';
+      else if (isSender) direction = 'sent';
+      else if (isRecipient) direction = 'received';
+
+      const companies = parseCompanies(sanitized.company);
+      return {
+        ...sanitized,
+        direction,
+        companies,
+        reply_required: 0
+      };
+    });
+
+    res.json({
+      success: true,
+      total: filteredTotal,
+      allCount,
+      sentCount,
+      receivedCount,
+      page: Number(page),
+      limit: Number(limit),
+      mode,
+      emails: processedRows
+    });
+  } catch (error) {
+    console.error('[Export Emails DB Error]', error);
+    res.status(500).json({ success: false, message: error.message, emails: [] });
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
+});
+
 // 11. Get specific email details (returns full body and attachment metadata)
 app.get('/api/emails/:id', async (req, res) => {
   let conn;
@@ -3553,7 +3781,8 @@ app.get('/api/emails/:id', async (req, res) => {
       return res.status(404).json({ error: 'Email not found' });
     }
 
-    const email = rows[0];
+    const rawEmail = rows[0];
+    const email = sanitizeEmailAttachments(rawEmail);
     let fallbackCompany = '';
     if (!email.company || String(email.company).toLowerCase() === 'outsider') {
       fallbackCompany = computeFallbackCompany(email.sender, email.to_details);

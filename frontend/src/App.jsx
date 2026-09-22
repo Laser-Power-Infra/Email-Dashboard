@@ -263,6 +263,158 @@ function extractCssFromText(text) {
 
 window.PORTAL_VERSION = '1.2.1';
 
+// Filter out email signature images, dummy logos, screenshots, etc.
+function isExcludedAttachment(filename) {
+  if (!filename || typeof filename !== 'string') return true;
+  const name = filename.trim().toLowerCase();
+  if (!name || name === '[no attachments]' || name === 'none' || name === '[no links]') return true;
+  
+  if (/^image\d*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^image00\d+.*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^image\s*\(\d+\)\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^screenshot[\w\s\-_().]*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^screen\s*shot[\w\s\-_().]*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^(logo|icon|sig|signature|banner|footer|header|social|facebook|linkedin|twitter|instagram|whatsapp|mail|clip_image)[\w\s\-_().]*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (/^(img|pic|picture)[\w\s\-_().]*\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return true;
+  if (['image.png', 'image.jpg', 'image.jpeg', 'image.gif', 'untitled.png', 'untitled.jpg', 'pasted_image.png'].includes(name)) return true;
+  
+  return false;
+}
+
+function getCleanAttachments(attachNamesStr, attachLinksStr) {
+  if (!attachNamesStr || attachNamesStr === '[No Attachments]') {
+    return { names: [], links: [] };
+  }
+  const rawNames = String(attachNamesStr).split(',').map(n => n.trim()).filter(Boolean);
+  const rawLinks = attachLinksStr && attachLinksStr !== '[No Links]' ? String(attachLinksStr).split(',').map(l => l.trim()) : [];
+  
+  const cleanNames = [];
+  const cleanLinks = [];
+  
+  rawNames.forEach((n, idx) => {
+    if (!isExcludedAttachment(n)) {
+      cleanNames.push(n);
+      cleanLinks.push(rawLinks[idx] || '');
+    }
+  });
+
+  return { names: cleanNames, links: cleanLinks };
+}
+
+// Modern Shimmer Skeleton Table Loader for instant responsive filter switching
+function TableSkeleton({ rows = 6, type = 'export' }) {
+  const dummy = Array.from({ length: rows });
+
+  if (type === 'export') {
+    return (
+      <tbody className="skeleton-tbody">
+        {dummy.map((_, i) => (
+          <tr key={i} className="skeleton-row">
+            {/* Date Received & Direction */}
+            <td style={{ width: '170px', verticalAlign: 'top' }}>
+              <div className="skeleton-cell">
+                <div className="skeleton-shimmer skeleton-line" style={{ width: '90px' }}></div>
+                <div className="skeleton-shimmer skeleton-pill" style={{ width: '65px', marginTop: '0.2rem' }}></div>
+              </div>
+            </td>
+            {/* Subject & Preview */}
+            <td style={{ verticalAlign: 'top' }}>
+              <div className="skeleton-cell">
+                <div className="skeleton-shimmer skeleton-line lg" style={{ width: `${60 + (i % 4) * 10}%` }}></div>
+                <div className="skeleton-shimmer skeleton-line sm" style={{ width: `${80 - (i % 3) * 15}%` }}></div>
+                <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.3rem' }}>
+                  <div className="skeleton-shimmer skeleton-pill" style={{ width: '55px' }}></div>
+                  <div className="skeleton-shimmer skeleton-pill" style={{ width: '80px' }}></div>
+                </div>
+              </div>
+            </td>
+            {/* Sender */}
+            <td style={{ width: '230px', verticalAlign: 'top' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <div className="skeleton-shimmer skeleton-avatar"></div>
+                <div className="skeleton-cell" style={{ flex: 1 }}>
+                  <div className="skeleton-shimmer skeleton-line" style={{ width: '90%' }}></div>
+                  <div className="skeleton-shimmer skeleton-line sm" style={{ width: '65%' }}></div>
+                </div>
+              </div>
+            </td>
+            {/* All Recipients */}
+            <td style={{ width: '240px', verticalAlign: 'top' }}>
+              <div className="skeleton-cell">
+                <div className="skeleton-shimmer skeleton-pill" style={{ width: '85%' }}></div>
+                <div className="skeleton-shimmer skeleton-pill" style={{ width: '65%' }}></div>
+              </div>
+            </td>
+            {/* Actions */}
+            <td style={{ width: '100px', textAlign: 'right', verticalAlign: 'top' }}>
+              <div className="skeleton-shimmer skeleton-pill" style={{ width: '65px', marginLeft: 'auto' }}></div>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    );
+  }
+
+  if (type === 'tenders') {
+    return (
+      <tbody className="skeleton-tbody">
+        {dummy.map((_, i) => (
+          <tr key={i} className="skeleton-row">
+            <td style={{ width: '100px' }}><div className="skeleton-shimmer skeleton-line" style={{ width: '70px' }}></div></td>
+            <td>
+              <div className="skeleton-cell">
+                <div className="skeleton-shimmer skeleton-line lg" style={{ width: `${70 + (i % 3) * 10}%` }}></div>
+                <div className="skeleton-shimmer skeleton-line sm" style={{ width: '50%' }}></div>
+              </div>
+            </td>
+            <td style={{ width: '180px' }}><div className="skeleton-shimmer skeleton-line" style={{ width: '80%' }}></div></td>
+            <td style={{ width: '120px' }}><div className="skeleton-shimmer skeleton-pill" style={{ width: '70px' }}></div></td>
+            <td style={{ width: '150px' }}><div className="skeleton-shimmer skeleton-line" style={{ width: '100px' }}></div></td>
+            <td style={{ width: '120px', textAlign: 'center' }}><div className="skeleton-shimmer skeleton-pill" style={{ width: '75px', margin: '0 auto' }}></div></td>
+          </tr>
+        ))}
+      </tbody>
+    );
+  }
+
+  // Default emails / all-emails
+  return (
+    <tbody className="skeleton-tbody">
+      {dummy.map((_, i) => (
+        <tr key={i} className="skeleton-row">
+          <td style={{ width: '160px', verticalAlign: 'top' }}>
+            <div className="skeleton-cell">
+              <div className="skeleton-shimmer skeleton-line" style={{ width: '85px' }}></div>
+              <div className="skeleton-shimmer skeleton-pill" style={{ width: '55px' }}></div>
+            </div>
+          </td>
+          <td style={{ verticalAlign: 'top' }}>
+            <div className="skeleton-cell">
+              <div className="skeleton-shimmer skeleton-line lg" style={{ width: `${60 + (i % 3) * 15}%` }}></div>
+              <div className="skeleton-shimmer skeleton-line sm" style={{ width: `${75 - (i % 2) * 20}%` }}></div>
+            </div>
+          </td>
+          <td style={{ width: '220px', verticalAlign: 'top' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <div className="skeleton-shimmer skeleton-avatar"></div>
+              <div className="skeleton-cell" style={{ flex: 1 }}>
+                <div className="skeleton-shimmer skeleton-line" style={{ width: '85%' }}></div>
+                <div className="skeleton-shimmer skeleton-line sm" style={{ width: '60%' }}></div>
+              </div>
+            </div>
+          </td>
+          <td style={{ width: '140px', verticalAlign: 'top' }}>
+            <div className="skeleton-shimmer skeleton-pill" style={{ width: '70px' }}></div>
+          </td>
+          <td style={{ width: '100px', textAlign: 'right', verticalAlign: 'top' }}>
+            <div className="skeleton-shimmer skeleton-pill" style={{ width: '60px', marginLeft: 'auto' }}></div>
+          </td>
+        </tr>
+      ))}
+    </tbody>
+  );
+}
+
 function hslToHex(h, s, l) {
   l /= 100;
   const a = (s * Math.min(l, 1 - l)) / 100;
@@ -1390,6 +1542,115 @@ function App() {
     }
   }, [activeTab]);
 
+  // ==========================================
+  // EXPORT MAILBOX STATES (export@laserpowerinfra.com)
+  // ==========================================
+  const [exportEmails, setExportEmails] = useState([]);
+  const [exportEmailsTotal, setExportEmailsTotal] = useState(0);
+  const [exportAllCount, setExportAllCount] = useState(0);
+  const [exportSentCount, setExportSentCount] = useState(0);
+  const [exportRecvCount, setExportRecvCount] = useState(0);
+  const [exportPage, setExportPage] = useState(1);
+  const [exportLimit, setExportLimit] = useState(50);
+  const [exportMode, setExportMode] = useState('all'); // 'all' | 'received' | 'sent'
+  const [exportSearch, setExportSearch] = useState('');
+  const [debouncedExportSearch, setDebouncedExportSearch] = useState('');
+  const [exportDateSort, setExportDateSort] = useState('desc');
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportStartDate, setExportStartDate] = useState('');
+  const [exportEndDate, setExportEndDate] = useState('');
+  const [exportSelectedCategory, setExportSelectedCategory] = useState('');
+  const [exportSelectedLabel, setExportSelectedLabel] = useState('');
+
+  const fetchExportEmailsAbortRef = useRef(null);
+  const exportCacheRef = useRef(new Map());
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedExportSearch(exportSearch), 200);
+    return () => clearTimeout(timer);
+  }, [exportSearch]);
+
+  const fetchExportEmails = async (sortOrderOverride) => {
+    if (fetchExportEmailsAbortRef.current) fetchExportEmailsAbortRef.current.abort();
+    const controller = new AbortController();
+    fetchExportEmailsAbortRef.current = controller;
+    
+    const effectiveSortOrder = sortOrderOverride || exportDateSort;
+    const cacheKey = JSON.stringify({
+      page: exportPage,
+      limit: exportLimit,
+      mode: exportMode,
+      sortOrder: effectiveSortOrder,
+      search: debouncedExportSearch,
+      startDate: exportStartDate,
+      endDate: exportEndDate,
+      category: exportSelectedCategory,
+      label: exportSelectedLabel
+    });
+
+    if (exportCacheRef.current.has(cacheKey)) {
+      const cached = exportCacheRef.current.get(cacheKey);
+      setExportEmails(cached.emails || []);
+      setExportEmailsTotal(cached.total || 0);
+      setExportAllCount(cached.allCount || 0);
+      setExportSentCount(cached.sentCount || 0);
+      setExportRecvCount(cached.receivedCount || 0);
+      setExportLoading(false);
+      return;
+    }
+
+    setExportLoading(true);
+    try {
+      let url = `/api/export-emails?page=${exportPage}&limit=${exportLimit}&mode=${exportMode}&sortOrder=${effectiveSortOrder}`;
+      if (debouncedExportSearch) url += `&search=${encodeURIComponent(debouncedExportSearch)}`;
+      if (exportStartDate) url += `&startDate=${exportStartDate}`;
+      if (exportEndDate) url += `&endDate=${exportEndDate}`;
+      if (exportSelectedCategory) url += `&category=${encodeURIComponent(exportSelectedCategory)}`;
+      if (exportSelectedLabel) url += `&label=${encodeURIComponent(exportSelectedLabel)}`;
+
+      const res = await fetch(url, { signal: controller.signal });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          exportCacheRef.current.set(cacheKey, data);
+          setExportEmails(data.emails || []);
+          setExportEmailsTotal(data.total || 0);
+          setExportAllCount(data.allCount || 0);
+          setExportSentCount(data.sentCount || 0);
+          setExportRecvCount(data.receivedCount || 0);
+        }
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      console.error('Failed to fetch export emails:', err);
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
+  const prevExportFiltersRef = useRef({ mode: 'all', search: '', startDate: '', endDate: '', sortOrder: 'desc', category: '', label: '' });
+
+  useEffect(() => {
+    if (activeTab !== 'export-mailbox') return;
+    const prev = prevExportFiltersRef.current;
+    const curr = { mode: exportMode, search: debouncedExportSearch, startDate: exportStartDate, endDate: exportEndDate, sortOrder: exportDateSort, category: exportSelectedCategory, label: exportSelectedLabel };
+    const filtersChanged = prev.mode !== curr.mode || prev.search !== curr.search || prev.startDate !== curr.startDate || prev.endDate !== curr.endDate || prev.sortOrder !== curr.sortOrder || prev.category !== curr.category || prev.label !== curr.label;
+    if (filtersChanged && exportPage !== 1) {
+      setExportPage(1);
+      prevExportFiltersRef.current = curr;
+      return;
+    }
+    prevExportFiltersRef.current = curr;
+    fetchExportEmails(exportDateSort);
+  }, [activeTab, exportPage, exportLimit, exportMode, debouncedExportSearch, exportStartDate, exportEndDate, exportDateSort, exportSelectedCategory, exportSelectedLabel]);
+
+  useEffect(() => {
+    if (activeTab === 'export-mailbox') {
+      fetchAvailableLabels();
+      fetchCategories();
+    }
+  }, [activeTab]);
+
   // Fetch company data on load and whenever the active tab changes so the filter stays updated.
   useEffect(() => {
     fetchCompanies();
@@ -2463,6 +2724,14 @@ function App() {
               <span className="nav-text">All Emails Explorer</span>
             </li>
             <li
+              className={`nav-item ${activeTab === 'export-mailbox' ? 'active' : ''}`}
+              onClick={() => setActiveTab('export-mailbox')}
+              title="Export Mailbox (export@laserpowerinfra.com)"
+            >
+              <Send />
+              <span className="nav-text">Export Mailbox</span>
+            </li>
+            <li
               className={`nav-item ${activeTab === 'sender-mapping' ? 'active' : ''}`}
               onClick={() => setActiveTab('sender-mapping')}
               title="Sender Mapping"
@@ -2506,42 +2775,9 @@ function App() {
       {/* Main Content View */}
       <main className="main-content">
         <header className="header-bar">
-          <div className="header-title">
-            {/* <img src="https://laserpowerinfra.com/wp-content/uploads/2025/09/lpi-logo.png" alt="Company Logo" className="company-logo" /> */}
-            <h1>
-              {activeTab === 'dashboard' && 'Dashboard'}
-              {activeTab === 'tenders' && 'Tenders Directory'}
-              {activeTab === 'emails' && 'Matched Emails'}
-              {activeTab === 'all-emails' && 'All Emails Explorer'}
-              {activeTab === 'sender-mapping' && 'Sender Mapping'}
-              {activeTab === 'config' && 'System Config'}
-              {activeTab === 'rules' && 'AI Knowledge Base'}
-            </h1>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.25rem', flexWrap: 'wrap' }}>
-              <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                {activeTab === 'dashboard' && 'Visual overview of participated tenders and email status'}
-                {activeTab === 'tenders' && 'Manage GSheet synced tenders and matching emails'}
-                {activeTab === 'emails' && 'Directory of all matched emails across all tenders'}
-                {activeTab === 'all-emails' && 'Explore and label all incoming emails with smart categories'}
-                {activeTab === 'sender-mapping' && 'Upload sender names and assign company mappings'}
-                {activeTab === 'config' && 'Verify Google API, MySQL credentials, and column mappings'}
-                {activeTab === 'rules' && 'Define guidelines and rules to train the AI to filter out wrong email matches'}
-              </p>
-              {status.dbFallbackActive ? (
-                <span className="badge badge-warning" style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem', textTransform: 'uppercase', fontWeight: 600 }}>
-                  <AlertCircle size={10} /> Offline Fallback Active
-                </span>
-              ) : status.database ? (
-                <span className="badge badge-success" style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem', textTransform: 'uppercase', fontWeight: 600 }}>
-                  <CheckCircle2 size={10} /> Cloud Connected
-                </span>
-              ) : null}
-            </div>
-          </div>
-
           <div className="header-actions">
             <div className="search-wrapper">
-              <Search className="search-icon" />
+              <Search className="search-icon" size={13} />
               <input
                 type="text"
                 placeholder="Search Client, Tender No, Keyword..."
@@ -2551,10 +2787,11 @@ function App() {
               />
             </div>
             {/* Theme buttons */}
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
               <button
                 className={`btn btn-dark ${theme === 'dark' ? 'active' : ''}`}
                 onClick={() => applyTheme('dark')}
+                title="Dark Theme"
               >
                 Dark Theme
               </button>
@@ -2562,6 +2799,7 @@ function App() {
               <button
                 className={`btn btn-pink ${theme === 'pink' ? 'active' : ''}`}
                 onClick={() => applyTheme('pink')}
+                title="Light Pink Theme"
               >
                 Light Pink
               </button>
@@ -2571,17 +2809,17 @@ function App() {
                   href={status.sheetUrl || `https://docs.google.com/spreadsheets/d/${status.sheetId}/edit#gid=${status.sheetGid || 0}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="btn btn-secondary"
-                  style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', padding: '0.4rem 0.75rem' }}
+                  className="btn btn-secondary btn-small"
+                  style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.76rem', padding: '0.35rem 0.65rem', borderRadius: '6px' }}
                   title="Open synced Google Sheet in new tab"
                 >
-                  <ExternalLink size={14} /> Open Google Sheet
+                  <ExternalLink size={12} /> Open Google Sheet
                 </a>
               )}
             </div>
             {activeTab === 'tenders' && (
-              <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'center' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', cursor: 'pointer', userSelect: 'none' }}>
+              <div style={{ display: 'flex', gap: '0.85rem', alignItems: 'center', fontSize: '0.8rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', userSelect: 'none' }}>
                   <input
                     type="checkbox"
                     checked={filterParticipated}
@@ -2589,7 +2827,7 @@ function App() {
                   />
                   Participated Only
                 </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', cursor: 'pointer', userSelect: 'none' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', userSelect: 'none' }}>
                   <input
                     type="checkbox"
                     checked={filterMatchedOnly}
@@ -2599,256 +2837,250 @@ function App() {
                 </label>
               </div>
             )}
-
-            
           </div>
         </header>
 
-        {/* Global Filter Bar */}
-        <div className="global-filter-bar">
-          <div className="filter-group">
-            <div className="filter-group-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '1.5rem' }}>
-              <span className="filter-label"><Calendar size={14} /> Submission Date</span>
-              <div className="filter-mode-switch">
-                <button 
-                  className={`filter-mode-btn ${subFilterMode === 'range' ? 'active' : ''}`}
-                  onClick={() => setSubFilterMode('range')}
-                >
-                  Range
-                </button>
-                <button 
-                  className={`filter-mode-btn ${subFilterMode === 'interval' ? 'active' : ''}`}
-                  onClick={() => setSubFilterMode('interval')}
-                >
-                  Interval
-                </button>
-              </div>
-            </div>
-
-            <div className="filter-group-body" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', minHeight: '32px' }}>
-              {subFilterMode === 'range' ? (
-                <>
-                  <input
-                    type="date"
-                    className="filter-input"
-                    value={subStartDate}
-                    onChange={(e) => setSubStartDate(e.target.value)}
-                  />
-                  <span className="filter-separator">to</span>
-                  <input
-                    type="date"
-                    className="filter-input"
-                    value={subEndDate}
-                    onChange={(e) => setSubEndDate(e.target.value)}
-                  />
-                </>
-              ) : (
-                <div className="filter-interval-control">
-                  <select
-                    className="filter-select"
-                    value={subIntervalDir}
-                    onChange={(e) => setSubIntervalDir(e.target.value)}
-                  >
-                    <option value="next" style={{ background: '#1f1f1f' }}>Next</option>
-                    <option value="last" style={{ background: '#1f1f1f' }}>Last</option>
-                  </select>
-                  <input
-                    type="number"
-                    className="filter-input-number"
-                    placeholder="No."
-                    min="1"
-                    value={subIntervalValue}
-                    onChange={(e) => setSubIntervalValue(e.target.value)}
-                  />
-                  <select
-                    className="filter-select"
-                    value={subIntervalUnit}
-                    onChange={(e) => setSubIntervalUnit(e.target.value)}
-                  >
-                    <option value="days" style={{ background: '#1f1f1f' }}>Days</option>
-                    <option value="months" style={{ background: '#1f1f1f' }}>Months</option>
-                  </select>
-                </div>
-              )}
-              
-              {(subStartDate || subEndDate || subIntervalValue) && (
-                <button className="btn-clear" onClick={handleClearSubFilter}>✕</button>
-              )}
-            </div>
-          </div>
-
-          <div className="filter-group">
-            <div className="filter-group-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '1.5rem' }}>
-              <span className="filter-label"><Clock size={14} /> Email Received</span>
-              <div className="filter-mode-switch">
-                <button 
-                  className={`filter-mode-btn ${recFilterMode === 'range' ? 'active' : ''}`}
-                  onClick={() => setRecFilterMode('range')}
-                >
-                  Range
-                </button>
-                <button 
-                  className={`filter-mode-btn ${recFilterMode === 'interval' ? 'active' : ''}`}
-                  onClick={() => setRecFilterMode('interval')}
-                >
-                  Interval
-                </button>
-              </div>
-            </div>
-
-            <div className="filter-group-body" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', minHeight: '32px' }}>
-              {recFilterMode === 'range' ? (
-                <>
-                  <input
-                    type="date"
-                    className="filter-input"
-                    value={recStartDate}
-                    onChange={(e) => setRecStartDate(e.target.value)}
-                  />
-                  <span className="filter-separator">to</span>
-                  <input
-                    type="date"
-                    className="filter-input"
-                    value={recEndDate}
-                    onChange={(e) => setRecEndDate(e.target.value)}
-                  />
-                </>
-              ) : (
-                <div className="filter-interval-control">
-                  <select
-                    className="filter-select"
-                    value={recIntervalDir}
-                    onChange={(e) => setRecIntervalDir(e.target.value)}
-                  >
-                    <option value="last" style={{ background: '#1f1f1f' }}>Last</option>
-                    <option value="next" style={{ background: '#1f1f1f' }}>Next</option>
-                  </select>
-                  <input
-                    type="number"
-                    className="filter-input-number"
-                    placeholder="No."
-                    min="1"
-                    value={recIntervalValue}
-                    onChange={(e) => setRecIntervalValue(e.target.value)}
-                  />
-                  <select
-                    className="filter-select"
-                    value={recIntervalUnit}
-                    onChange={(e) => setRecIntervalUnit(e.target.value)}
-                  >
-                    <option value="days" style={{ background: '#1f1f1f' }}>Days</option>
-                    <option value="months" style={{ background: '#1f1f1f' }}>Months</option>
-                  </select>
-                </div>
-              )}
-
-              {(recStartDate || recEndDate || recIntervalValue) && (
-                <button className="btn-clear" onClick={handleClearRecFilter}>✕</button>
-              )}
-            </div>
-          </div>
-
-          <div className="filter-group-right">
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={excludeTenderTiger}
-                onChange={(e) => setExcludeTenderTiger(e.target.checked)}
-              />
-              Exclude @tendertiger.com
-            </label>
-          </div>
-        </div>
-
-        {/* ── Company & Codeword Filter Bars ── */}
-        <div style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '0.6rem',
-          padding: '0.75rem 1.25rem',
-          margin: '0.5rem 0 0 0',
-          background: 'rgba(255,255,255,0.02)',
-          borderTop: '1px solid rgba(255,255,255,0.06)',
-        }}>
-          {/* Company row */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-            <span style={{
-              display: 'flex', alignItems: 'center', gap: '0.3rem',
-              fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)',
-              textTransform: 'uppercase', letterSpacing: '0.1em',
-              whiteSpace: 'nowrap', paddingRight: '0.6rem',
-              borderRight: '1px solid rgba(255,255,255,0.1)',
-              minWidth: '90px'
-            }}>
-              <Building2 size={12} /> Company
-            </span>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.45rem', alignItems: 'center' }}>
-              {['', ...COMPANY_LIST, 'OUTSIDER'].map(c => {
-                const color = c ? COMPANY_COLORS[c] : null;
-                const isActive = activeCompanyFilter === c;
-                const btnStyle = c
-                  ? isActive
-                    ? { backgroundColor: color, borderColor: color, color: '#fff' }
-                    : { backgroundColor: `${color}18`, borderColor: `${color}50`, color: color }
-                  : isActive
-                    ? { backgroundColor: 'rgba(255,255,255,0.12)', borderColor: 'rgba(255,255,255,0.3)', color: '#fff' }
-                    : { backgroundColor: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.12)', color: 'var(--text-muted)' };
-                return (
-                  <button
-                    key={c || 'all'}
-                    className={`company-filter-btn ${isActive ? 'active' : ''}`}
-                    style={btnStyle}
-                    onClick={() => setActiveCompanyFilter(isActive ? '' : c)}
-                  >
-                    {c || 'All'}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Codeword row — shown when codewords exist */}
-          {codewordsList.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-              <span style={{
-                display: 'flex', alignItems: 'center', gap: '0.3rem',
-                fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)',
-                textTransform: 'uppercase', letterSpacing: '0.1em',
-                whiteSpace: 'nowrap', paddingRight: '0.6rem',
-                borderRight: '1px solid rgba(255,255,255,0.1)',
-                minWidth: '90px'
-              }}>
-                <Filter size={12} /> Codeword
-              </span>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.45rem', alignItems: 'center' }}>
-                {[null, ...codewordsList].map((cw) => {
-                  const label = cw ? cw.codeword : 'All';
-                  const key = cw ? cw.codeword : 'all-cw';
-                  const color = cw ? (COMPANY_COLORS[cw.company] || '#818cf8') : null;
-                  const isActive = activeCwFilter === (cw ? cw.codeword : '');
-                  const btnStyle = cw
-                    ? isActive
-                      ? { backgroundColor: color, borderColor: color, color: '#fff' }
-                      : { backgroundColor: `${color}18`, borderColor: `${color}55`, color: color }
-                    : isActive
-                      ? { backgroundColor: 'rgba(255,255,255,0.12)', borderColor: 'rgba(255,255,255,0.3)', color: '#fff' }
-                      : { backgroundColor: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.12)', color: 'var(--text-muted)' };
-                  return (
-                    <button
-                      key={key}
-                      className={`company-filter-btn ${isActive ? 'active' : ''}`}
-                      style={btnStyle}
-                      onClick={() => setActiveCwFilter(isActive ? '' : (cw ? cw.codeword : ''))}
-                      title={cw ? `${cw.company} · ${cw.category} · ${cw.sub_category}` : 'Show all'}
+        {/* Global Filter Bar & Company Filters (only for tenders, emails, and all-emails tabs) */}
+        {['tenders', 'emails', 'all-emails'].includes(activeTab) && (
+          <>
+            <div className="global-filter-bar">
+              <div className="filter-group">
+                <div className="filter-group-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '1.5rem' }}>
+                  <span className="filter-label"><Calendar size={14} /> Submission Date</span>
+                  <div className="filter-mode-switch">
+                    <button 
+                      className={`filter-mode-btn ${subFilterMode === 'range' ? 'active' : ''}`}
+                      onClick={() => setSubFilterMode('range')}
                     >
-                      {label}
+                      Range
                     </button>
-                  );
-                })}
+                    <button 
+                      className={`filter-mode-btn ${subFilterMode === 'interval' ? 'active' : ''}`}
+                      onClick={() => setSubFilterMode('interval')}
+                    >
+                      Interval
+                    </button>
+                  </div>
+                </div>
+
+                <div className="filter-group-body" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', minHeight: '32px' }}>
+                  {subFilterMode === 'range' ? (
+                    <>
+                      <input
+                        type="date"
+                        className="filter-input"
+                        value={subStartDate}
+                        onChange={(e) => setSubStartDate(e.target.value)}
+                      />
+                      <span className="filter-separator">to</span>
+                      <input
+                        type="date"
+                        className="filter-input"
+                        value={subEndDate}
+                        onChange={(e) => setSubEndDate(e.target.value)}
+                      />
+                    </>
+                  ) : (
+                    <div className="filter-interval-control">
+                      <select
+                        className="filter-select"
+                        value={subIntervalDir}
+                        onChange={(e) => setSubIntervalDir(e.target.value)}
+                      >
+                        <option value="next" style={{ background: '#1f1f1f' }}>Next</option>
+                        <option value="last" style={{ background: '#1f1f1f' }}>Last</option>
+                      </select>
+                      <input
+                        type="number"
+                        className="filter-input-number"
+                        placeholder="No."
+                        min="1"
+                        value={subIntervalValue}
+                        onChange={(e) => setSubIntervalValue(e.target.value)}
+                      />
+                      <select
+                        className="filter-select"
+                        value={subIntervalUnit}
+                        onChange={(e) => setSubIntervalUnit(e.target.value)}
+                      >
+                        <option value="days" style={{ background: '#1f1f1f' }}>Days</option>
+                        <option value="months" style={{ background: '#1f1f1f' }}>Months</option>
+                      </select>
+                    </div>
+                  )}
+                  
+                  {(subStartDate || subEndDate || subIntervalValue) && (
+                    <button className="btn-clear" onClick={handleClearSubFilter}>✕</button>
+                  )}
+                </div>
+              </div>
+
+              <div className="filter-group">
+                <div className="filter-group-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '1.5rem' }}>
+                  <span className="filter-label"><Clock size={14} /> Email Received</span>
+                  <div className="filter-mode-switch">
+                    <button 
+                      className={`filter-mode-btn ${recFilterMode === 'range' ? 'active' : ''}`}
+                      onClick={() => setRecFilterMode('range')}
+                    >
+                      Range
+                    </button>
+                    <button 
+                      className={`filter-mode-btn ${recFilterMode === 'interval' ? 'active' : ''}`}
+                      onClick={() => setRecFilterMode('interval')}
+                    >
+                      Interval
+                    </button>
+                  </div>
+                </div>
+
+                <div className="filter-group-body" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', minHeight: '32px' }}>
+                  {recFilterMode === 'range' ? (
+                    <>
+                      <input
+                        type="date"
+                        className="filter-input"
+                        value={recStartDate}
+                        onChange={(e) => setRecStartDate(e.target.value)}
+                      />
+                      <span className="filter-separator">to</span>
+                      <input
+                        type="date"
+                        className="filter-input"
+                        value={recEndDate}
+                        onChange={(e) => setRecEndDate(e.target.value)}
+                      />
+                    </>
+                  ) : (
+                    <div className="filter-interval-control">
+                      <select
+                        className="filter-select"
+                        value={recIntervalDir}
+                        onChange={(e) => setRecIntervalDir(e.target.value)}
+                      >
+                        <option value="last" style={{ background: '#1f1f1f' }}>Last</option>
+                        <option value="next" style={{ background: '#1f1f1f' }}>Next</option>
+                      </select>
+                      <input
+                        type="number"
+                        className="filter-input-number"
+                        placeholder="No."
+                        min="1"
+                        value={recIntervalValue}
+                        onChange={(e) => setRecIntervalValue(e.target.value)}
+                      />
+                      <select
+                        className="filter-select"
+                        value={recIntervalUnit}
+                        onChange={(e) => setRecIntervalUnit(e.target.value)}
+                      >
+                        <option value="days" style={{ background: '#1f1f1f' }}>Days</option>
+                        <option value="months" style={{ background: '#1f1f1f' }}>Months</option>
+                      </select>
+                    </div>
+                  )}
+
+                  {(recStartDate || recEndDate || recIntervalValue) && (
+                    <button className="btn-clear" onClick={handleClearRecFilter}>✕</button>
+                  )}
+                </div>
+              </div>
+
+              <div className="filter-group-right">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={excludeTenderTiger}
+                    onChange={(e) => setExcludeTenderTiger(e.target.checked)}
+                  />
+                  Exclude @tendertiger.com
+                </label>
               </div>
             </div>
-          )}
-        </div>
+
+            {/* ── Company & Codeword Filter Bars ── */}
+            <div className="company-codeword-filter-bar">
+              {/* Company row */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <span style={{
+                  display: 'flex', alignItems: 'center', gap: '0.3rem',
+                  fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)',
+                  textTransform: 'uppercase', letterSpacing: '0.1em',
+                  whiteSpace: 'nowrap', paddingRight: '0.6rem',
+                  borderRight: '1px solid var(--border-color)',
+                  minWidth: '90px'
+                }}>
+                  <Building2 size={12} /> Company
+                </span>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.45rem', alignItems: 'center' }}>
+                  {['', ...COMPANY_LIST, 'OUTSIDER'].map(c => {
+                    const color = c ? COMPANY_COLORS[c] : null;
+                    const isActive = activeCompanyFilter === c;
+                    const btnStyle = c
+                      ? isActive
+                        ? { backgroundColor: color, borderColor: color, color: '#fff' }
+                        : { backgroundColor: `${color}18`, borderColor: `${color}50`, color: color }
+                      : isActive
+                        ? { backgroundColor: 'rgba(255,255,255,0.12)', borderColor: 'rgba(255,255,255,0.3)', color: '#fff' }
+                        : { backgroundColor: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.12)', color: 'var(--text-muted)' };
+                    return (
+                      <button
+                        key={c || 'all'}
+                        className={`company-filter-btn ${isActive ? 'active' : ''}`}
+                        style={btnStyle}
+                        onClick={() => setActiveCompanyFilter(isActive ? '' : c)}
+                      >
+                        {c || 'All'}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Codeword row — shown when codewords exist */}
+              {codewordsList.length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <span style={{
+                    display: 'flex', alignItems: 'center', gap: '0.3rem',
+                    fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)',
+                    textTransform: 'uppercase', letterSpacing: '0.1em',
+                    whiteSpace: 'nowrap', paddingRight: '0.6rem',
+                    borderRight: '1px solid var(--border-color)',
+                    minWidth: '90px'
+                  }}>
+                    <Filter size={12} /> Codeword
+                  </span>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.45rem', alignItems: 'center' }}>
+                    {[null, ...codewordsList].map((cw) => {
+                      const label = cw ? cw.codeword : 'All';
+                      const key = cw ? cw.codeword : 'all-cw';
+                      const color = cw ? (COMPANY_COLORS[cw.company] || '#818cf8') : null;
+                      const isActive = activeCwFilter === (cw ? cw.codeword : '');
+                      const btnStyle = cw
+                        ? isActive
+                          ? { backgroundColor: color, borderColor: color, color: '#fff' }
+                          : { backgroundColor: `${color}18`, borderColor: `${color}55`, color: color }
+                        : isActive
+                          ? { backgroundColor: 'rgba(255,255,255,0.12)', borderColor: 'rgba(255,255,255,0.3)', color: '#fff' }
+                          : { backgroundColor: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.12)', color: 'var(--text-muted)' };
+                      return (
+                        <button
+                          key={key}
+                          className={`company-filter-btn ${isActive ? 'active' : ''}`}
+                          style={btnStyle}
+                          onClick={() => setActiveCwFilter(isActive ? '' : (cw ? cw.codeword : ''))}
+                          title={cw ? `${cw.company} · ${cw.category} · ${cw.sub_category}` : 'Show all'}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
 
         {/* 1. DASHBOARD VIEW */}
         {activeTab === 'dashboard' && (
@@ -3089,10 +3321,23 @@ function App() {
         {/* 2. TENDERS DIRECTORY */}
         {activeTab === 'tenders' && (
           <div>
-            {loading && tenders.length === 0 ? (
-              <div className="loading-container">
-                <div className="spinner"></div>
-                <p>Loading Tenders from GSheet Cache...</p>
+            {loading ? (
+              <div className="table-container">
+                <table className="tenders-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Tender For / Description</th>
+                      <th>Client</th>
+                      <th>Submission Date</th>
+                      <th>Company</th>
+                      <th>Tender / Docket No</th>
+                      <th style={{ textAlign: 'center' }}>Emails</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <TableSkeleton rows={8} type="tenders" />
+                </table>
               </div>
             ) : filteredTenders.length === 0 ? (
               <div className="empty-state">
@@ -3101,7 +3346,7 @@ function App() {
                 <p>Try clearing your search query or sync the portal.</p>
               </div>
             ) : (
-              <div className="table-container" style={{ opacity: loading ? 0.75 : 1, transition: 'opacity 0.2s' }}>
+              <div className="table-container">
                 <table className="tenders-table">
                   <thead>
                     <tr>
@@ -4041,10 +4286,21 @@ function App() {
               </div>
             </div>
 
-            {emailsLoading && emailsList.length === 0 ? (
-              <div className="loading-container">
-                <div className="spinner"></div>
-                <p>Loading Matched Emails from Database...</p>
+            {emailsLoading ? (
+              <div className="table-container">
+                <table className="tenders-table">
+                  <thead>
+                    <tr>
+                      <th style={{ whiteSpace: 'nowrap' }}>Date Received</th>
+                      <th>Subject & Preview</th>
+                      <th style={{ width: '220px' }}>Sender</th>
+                      <th>Matched Tender / Docket</th>
+                      <th style={{ width: '130px' }}>Company</th>
+                      <th style={{ width: '100px', textAlign: 'right' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <TableSkeleton rows={8} type="emails" />
+                </table>
               </div>
             ) : filteredEmails.length === 0 ? (
               <div className="empty-state">
@@ -4053,7 +4309,7 @@ function App() {
                 <p>Try clearing your search query or sync the portal.</p>
               </div>
             ) : (
-              <div className="table-container" style={{ opacity: emailsLoading ? 0.75 : 1, transition: 'opacity 0.2s' }}>
+              <div className="table-container">
                 <table className="tenders-table">
                   <thead>
                     <tr>
@@ -4400,10 +4656,22 @@ function App() {
             </div>
 
             {/* Emails Table */}
-            {allEmailsLoading && allEmails.length === 0 ? (
-              <div className="loading-container">
-                <div className="spinner"></div>
-                <p>Loading Emails Explorer...</p>
+            {allEmailsLoading ? (
+              <div className="table-container">
+                <table className="tenders-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '160px', whiteSpace: 'nowrap' }}>Date Received</th>
+                      <th>Subject & Preview</th>
+                      <th style={{ width: '220px' }}>Sender</th>
+                      <th style={{ width: '220px' }}>All Recipients</th>
+                      <th style={{ width: '150px' }}>Category</th>
+                      <th style={{ width: '200px' }}>Custom Labels</th>
+                      <th style={{ width: '100px', textAlign: 'right' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <TableSkeleton rows={8} type="all-emails" />
+                </table>
               </div>
             ) : allEmails.length === 0 ? (
               <div className="empty-state">
@@ -4412,7 +4680,7 @@ function App() {
                 <p>No emails match your selected filters. Try clearing your search or category toggles.</p>
               </div>
             ) : (
-              <div className="table-container" style={{ opacity: allEmailsLoading ? 0.75 : 1, transition: 'opacity 0.2s' }}>
+              <div className="table-container">
                 <table className="tenders-table">
                   <thead>
                     <tr>
@@ -4701,6 +4969,486 @@ function App() {
                     style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
                     disabled={allEmailsPage >= Math.ceil(allEmailsTotal / allEmailsLimit) || allEmailsLoading}
                     onClick={() => setAllEmailsPage(prev => prev + 1)}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 5b. EXPORT MAILBOX TAB (export@laserpowerinfra.com) */}
+        {activeTab === 'export-mailbox' && (
+          <div className="export-mailbox-container">
+            {/* Top Control Bar with 3-Way Mode Toggle and Filters */}
+            <div className="export-control-bar">
+              {/* 3-Way Mode Toggle: All / Receiving Mails / Sending Mails */}
+              <div className="export-toggle-group">
+                <button
+                  type="button"
+                  className={`export-toggle-btn ${exportMode === 'all' ? 'active-all' : ''}`}
+                  onClick={() => setExportMode('all')}
+                  title="View all emails where export@laserpowerinfra.com is sender or recipient"
+                >
+                  <Layers size={15} />
+                  <span>All Mails</span>
+                  <span className="export-count-pill">{exportAllCount}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`export-toggle-btn ${exportMode === 'received' ? 'active-received' : ''}`}
+                  onClick={() => setExportMode('received')}
+                  title="View emails received by export@laserpowerinfra.com"
+                >
+                  <Mail size={15} />
+                  <span>📥 Receiving Mails</span>
+                  <span className="export-count-pill">{exportRecvCount}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`export-toggle-btn ${exportMode === 'sent' ? 'active-sent' : ''}`}
+                  onClick={() => setExportMode('sent')}
+                  title="View emails sent from export@laserpowerinfra.com"
+                >
+                  <Send size={15} />
+                  <span>📤 Sending Mails</span>
+                  <span className="export-count-pill">{exportSentCount}</span>
+                </button>
+              </div>
+
+              {/* Right Controls: Search, Date Filter & Counters */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                {/* Search Bar */}
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                  <Search size={14} style={{ position: 'absolute', left: '0.75rem', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+                  <input
+                    type="text"
+                    placeholder="Search export mails, subjects, sender..."
+                    className="export-search-input"
+                    value={exportSearch}
+                    onChange={(e) => setExportSearch(e.target.value)}
+                  />
+                  {exportSearch && (
+                    <button
+                      className="btn-clear"
+                      onClick={() => setExportSearch('')}
+                      style={{ position: 'absolute', right: '0.75rem', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                {/* Quick Date Presets */}
+                <div className="export-date-presets">
+                  <button
+                    type="button"
+                    className={`export-date-btn ${!exportStartDate && !exportEndDate ? 'active' : ''}`}
+                    onClick={() => { setExportStartDate(''); setExportEndDate(''); }}
+                  >
+                    All Time
+                  </button>
+                  <button
+                    type="button"
+                    className={`export-date-btn ${exportStartDate && exportStartDate === exportEndDate ? 'active' : ''}`}
+                    onClick={() => {
+                      const today = new Date().toISOString().split('T')[0];
+                      setExportStartDate(today);
+                      setExportEndDate(today);
+                    }}
+                  >
+                    Today
+                  </button>
+                  <button
+                    type="button"
+                    className="export-date-btn"
+                    onClick={() => {
+                      const d = new Date();
+                      d.setDate(d.getDate() - 7);
+                      setExportStartDate(d.toISOString().split('T')[0]);
+                      setExportEndDate(new Date().toISOString().split('T')[0]);
+                    }}
+                  >
+                    7 Days
+                  </button>
+                  <button
+                    type="button"
+                    className="export-date-btn"
+                    onClick={() => {
+                      const d = new Date();
+                      d.setDate(d.getDate() - 30);
+                      setExportStartDate(d.toISOString().split('T')[0]);
+                      setExportEndDate(new Date().toISOString().split('T')[0]);
+                    }}
+                  >
+                    30 Days
+                  </button>
+                </div>
+
+                {/* Total Counter Badge */}
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Showing <strong>{exportEmails.length}</strong> of <strong>{exportEmailsTotal}</strong> emails
+                </div>
+              </div>
+            </div>
+
+            {/* Export Mailbox Table */}
+            {exportLoading ? (
+              <div className="table-container">
+                <table className="tenders-table" style={{ width: '100%' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: '170px', whiteSpace: 'nowrap' }}>
+                        <span>Date Received</span>
+                        <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-primary)', marginLeft: '0.2rem' }}>
+                          {exportDateSort === 'asc' ? '↑' : '↓'}
+                        </span>
+                      </th>
+                      <th>Subject & Preview</th>
+                      <th style={{ width: '230px' }}>Sender</th>
+                      <th style={{ width: '240px' }}>All Recipients</th>
+                      <th style={{ width: '100px', textAlign: 'right' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <TableSkeleton rows={8} type="export" />
+                </table>
+              </div>
+            ) : exportEmails.length === 0 ? (
+              <div className="empty-state">
+                <Send size={42} style={{ color: 'var(--color-primary-light)' }} />
+                <h3>No Export Emails Found</h3>
+                <p>No correspondence found for <code>export@laserpowerinfra.com</code> matching your current filters.</p>
+                {(exportSearch || exportStartDate || exportEndDate || exportMode !== 'all') && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{ marginTop: '1rem' }}
+                    onClick={() => {
+                      setExportSearch('');
+                      setExportStartDate('');
+                      setExportEndDate('');
+                      setExportMode('all');
+                    }}
+                  >
+                    Clear All Filters
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="table-container">
+                <table className="tenders-table" style={{ width: '100%' }}>
+                  <thead>
+                    <tr>
+                      {/* Header 1: Date Received ↓ */}
+                      <th style={{ width: '170px', whiteSpace: 'nowrap' }}>
+                        <button
+                          className="sort-th-btn"
+                          onClick={() => setExportDateSort(o => o === 'asc' ? 'desc' : 'asc')}
+                          title={exportDateSort === 'asc' ? 'Oldest first — click for Newest' : 'Newest first — click for Oldest'}
+                        >
+                          <span>Date Received</span>
+                          <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-primary)', marginLeft: '0.2rem' }}>
+                            {exportDateSort === 'asc' ? '↑' : '↓'}
+                          </span>
+                        </button>
+                      </th>
+
+                      {/* Header 2: Subject & Preview */}
+                      <th>Subject & Preview</th>
+
+                      {/* Header 3: Sender */}
+                      <th style={{ width: '230px' }}>Sender</th>
+
+                      {/* Header 4: All Recipients */}
+                      <th style={{ width: '240px' }}>All Recipients</th>
+
+                      {/* Header 5: Actions */}
+                      <th style={{ width: '100px', textAlign: 'right' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {exportEmails.map(email => {
+                      const isSentByExport = (email.sender || '').toLowerCase().includes('export@laserpowerinfra.com');
+                      const { names: attachList, links: linkList } = getCleanAttachments(email.attach_names, email.attach_links);
+
+                      return (
+                        <tr
+                          key={email.id}
+                          className="export-row-interactive"
+                          onClick={() => handleOpenEmailDetail(email.id)}
+                        >
+                          {/* 1. Date Received & Direction Badge */}
+                          <td style={{ verticalAlign: 'top', whiteSpace: 'nowrap' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                              <div style={{ fontWeight: 600, fontSize: '0.82rem', color: 'var(--text-main)' }}>
+                                {formatDateTime(email.date_received || email.date)}
+                              </div>
+                              <div>
+                                {email.direction === 'sent' ? (
+                                  <span className="export-badge-sent">
+                                    <Send size={10} /> SENT
+                                  </span>
+                                ) : email.direction === 'both' ? (
+                                  <span className="export-badge-both">
+                                    <RefreshCw size={10} /> SENT & RECV
+                                  </span>
+                                ) : (
+                                  <span className="export-badge-received">
+                                    <Mail size={10} /> INBOX
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* 2. Subject & Preview */}
+                          <td style={{ verticalAlign: 'top' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                              <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-main)', lineHeight: '1.3' }}>
+                                {email.subject || '(No Subject)'}
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: '0.78rem',
+                                  color: 'var(--text-muted)',
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  lineHeight: '1.4'
+                                }}
+                              >
+                                {email.body_preview || 'No preview available'}
+                              </div>
+
+                              {/* Attachment Badges with Drive Links */}
+                              {attachList.length > 0 && (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap', marginTop: '0.25rem' }}>
+                                  {attachList.map((fn, idx) => {
+                                    const dlink = linkList[idx] && linkList[idx] !== '[No Links]' ? linkList[idx] : null;
+                                    return dlink ? (
+                                      <a
+                                        key={idx}
+                                        href={dlink}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="export-att-chip"
+                                        title={`Open ${fn} in Google Drive`}
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <Paperclip size={11} color="var(--color-primary-light)" />
+                                        <span>{fn}</span>
+                                        <ExternalLink size={9} style={{ opacity: 0.6 }} />
+                                      </a>
+                                    ) : (
+                                      <span key={idx} className="export-att-chip" title={fn}>
+                                        <Paperclip size={11} />
+                                        <span>{fn}</span>
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              {/* Category / Company Tags */}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap', marginTop: '0.2rem' }}>
+                                {email.category && (
+                                  <span className="badge badge-secondary" style={{ fontSize: '0.68rem', padding: '0.1rem 0.45rem' }}>
+                                    {email.category}
+                                  </span>
+                                )}
+                                {email.company && email.company !== 'OUTSIDER' && (
+                                  <span
+                                    className="badge"
+                                    style={{
+                                      fontSize: '0.68rem',
+                                      padding: '0.1rem 0.45rem',
+                                      backgroundColor: `${COMPANY_COLORS[email.company] || '#818cf8'}25`,
+                                      color: COMPANY_COLORS[email.company] || '#818cf8',
+                                      border: `1px solid ${COMPANY_COLORS[email.company] || '#818cf8'}50`
+                                    }}
+                                  >
+                                    {email.company}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* 3. Sender */}
+                          <td style={{ verticalAlign: 'top', maxWidth: '230px' }}>
+                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.6rem' }}>
+                              <div style={{
+                                width: '30px',
+                                height: '30px',
+                                borderRadius: '50%',
+                                background: isSentByExport ? 'linear-gradient(135deg, #6366f1, #38bdf8)' : 'linear-gradient(135deg, #10b981, #06b6d4)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontWeight: 700,
+                                fontSize: '0.8rem',
+                                color: '#ffffff',
+                                flexShrink: 0
+                              }}>
+                                {(email.sender || 'U').charAt(0).toUpperCase()}
+                              </div>
+                              <div style={{ minWidth: 0, flexGrow: 1 }}>
+                                <div
+                                  style={{
+                                    fontWeight: 600,
+                                    fontSize: '0.84rem',
+                                    color: 'var(--text-main)',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap'
+                                  }}
+                                  title={email.sender}
+                                >
+                                  {email.sender ? email.sender.split('<')[0].replace(/["]/g, '').trim() : 'Unknown'}
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: '0.73rem',
+                                    color: 'var(--text-muted)',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    marginTop: '0.1rem'
+                                  }}
+                                  title={email.sender}
+                                >
+                                  {isSentByExport ? (
+                                    <span className="export-target-highlight">export@laserpowerinfra.com</span>
+                                  ) : (
+                                    email.sender
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* 4. All Recipients */}
+                          <td style={{ verticalAlign: 'top', maxWidth: '240px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                              {email.to_details && (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', flexWrap: 'wrap' }}>
+                                  <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)' }}>To:</span>
+                                  {email.to_details.split(',').map((addr, i) => {
+                                    const clean = addr.trim();
+                                    if (!clean) return null;
+                                    const isTarget = clean.toLowerCase().includes('export@laserpowerinfra.com');
+                                    return (
+                                      <span key={i} className={`export-recipient-pill ${isTarget ? 'is-target' : ''}`} title={clean}>
+                                        {clean}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {email.cc_details && (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', flexWrap: 'wrap' }}>
+                                  <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)' }}>Cc:</span>
+                                  {email.cc_details.split(',').map((addr, i) => {
+                                    const clean = addr.trim();
+                                    if (!clean) return null;
+                                    const isTarget = clean.toLowerCase().includes('export@laserpowerinfra.com');
+                                    return (
+                                      <span key={i} className={`export-recipient-pill ${isTarget ? 'is-target' : ''}`} title={clean}>
+                                        {clean}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {!email.to_details && !email.cc_details && (
+                                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* 5. Actions */}
+                          <td style={{ verticalAlign: 'top', textAlign: 'right' }}>
+                            <button
+                              className="btn btn-secondary btn-small"
+                              style={{ padding: '0.35rem 0.65rem', fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenEmailDetail(email.id);
+                              }}
+                              title="Inspect full email thread"
+                            >
+                              <Mail size={12} /> Inspect
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Pagination Footer */}
+            {exportEmailsTotal > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '1rem',
+                  backgroundColor: 'var(--bg-card)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '12px',
+                  marginTop: '0.5rem',
+                  fontSize: '0.85rem',
+                  color: 'var(--text-muted)',
+                  flexWrap: 'wrap',
+                  gap: '1rem'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span>Show</span>
+                  <select
+                    className="search-input"
+                    style={{
+                      padding: '0.25rem 0.5rem',
+                      background: 'rgba(255,255,255,0.03)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '6px',
+                      fontSize: '0.85rem'
+                    }}
+                    value={exportLimit}
+                    onChange={(e) => {
+                      setExportLimit(Number(e.target.value));
+                      setExportPage(1);
+                    }}
+                  >
+                    {[20, 50, 100, 200].map(val => (
+                      <option key={val} value={val} style={{ backgroundColor: 'var(--bg-main)' }}>{val}</option>
+                    ))}
+                  </select>
+                  <span>emails per page</span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+                    disabled={exportPage === 1 || exportLoading}
+                    onClick={() => setExportPage(prev => Math.max(prev - 1, 1))}
+                  >
+                    Previous
+                  </button>
+                  <span>
+                    Page <strong>{exportPage}</strong> of <strong>{Math.ceil(exportEmailsTotal / exportLimit) || 1}</strong>
+                  </span>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+                    disabled={exportPage >= Math.ceil(exportEmailsTotal / exportLimit) || exportLoading}
+                    onClick={() => setExportPage(prev => prev + 1)}
                   >
                     Next
                   </button>
@@ -5443,17 +6191,17 @@ function App() {
                   </div>
 
                   {/* 3. ATTACHMENTS LIST IF AVAILABLE */}
-                  {selectedEmail.attach_names && (
-                    <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                      <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                        <Paperclip size={12} color="#6366f1" />
-                        Attached Files ({selectedEmail.attach_names.split(',').length})
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                        {(() => {
-                          const names = selectedEmail.attach_names.split(',').map(n => n.trim());
-                          const links = selectedEmail.attach_links ? selectedEmail.attach_links.split(',').map(l => l.trim()) : [];
-                          return names.map((name, idx) => (
+                  {(() => {
+                    const { names, links } = getCleanAttachments(selectedEmail.attach_names, selectedEmail.attach_links);
+                    if (!names || names.length === 0) return null;
+                    return (
+                      <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                        <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                          <Paperclip size={12} color="#6366f1" />
+                          Attached Files ({names.length})
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                          {names.map((name, idx) => (
                             <a 
                               key={idx}
                               href={links[idx] || '#'}
@@ -5464,11 +6212,11 @@ function App() {
                               <FileText size={12} />
                               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
                             </a>
-                          ));
-                        })()}
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
 
                   {/* 4. EXTRACTED LINKS SECTION */}
                   {(() => {
@@ -6377,14 +7125,14 @@ function App() {
               })()}
 
               {/* Attachments Section */}
-              {detailedEmail.attach_names ? (
-                <div>
-                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>Attached Files (Google Drive)</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
-                    {(() => {
-                      const names = detailedEmail.attach_names.split(',').map(n => n.trim());
-                      const links = detailedEmail.attach_links ? detailedEmail.attach_links.split(',').map(l => l.trim()) : [];
-                      return names.map((name, idx) => {
+              {(() => {
+                const { names, links } = getCleanAttachments(detailedEmail.attach_names, detailedEmail.attach_links);
+                if (!names || names.length === 0) return null;
+                return (
+                  <div>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>Attached Files (Google Drive)</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
+                      {names.map((name, idx) => {
                         const link = links[idx] || '#';
                         return (
                           <a 
@@ -6405,11 +7153,11 @@ function App() {
                             <ExternalLink size={14} color="var(--text-muted)" />
                           </a>
                         );
-                      });
-                    })()}
+                      })}
+                    </div>
                   </div>
-                </div>
-              ) : null}
+                );
+              })()}
               </>
               )}
 
