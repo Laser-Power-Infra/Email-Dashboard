@@ -41,6 +41,7 @@ for (const envP of envPaths) {
 
 const { extractTenderTokens, checkMatch, checkMatchNormalized, checkMatchCompiled, makeTokenRegex } = require('./matcher');
 const { shouldUseFullSync } = require('./syncStrategy');
+const { syncDocketQuotationMails } = require('./docketQuotationSync');
 
 const COMPANY_CANON = {
   laser: 'Laser', gmd: 'GMD', uic: 'UIC', ceebuild: 'CEEBUILD',
@@ -2072,6 +2073,12 @@ async function runSync(forceFullSyncRequested = false) {
     writeCache(CACHE_FILE, finalSyncPayload);
     
     console.log(`Sync completed successfully. Matches found: ${newMatchesCount}. New threshold ID: ${newMaxSyncedId}`);
+    
+    // Asynchronously trigger PostgreSQL Docket & Quotation sync in background for newly arrived threads
+    syncDocketQuotationMails({ recentLimit: 500 }).catch(err => {
+      console.warn('[PostgreSQL Sync Warning] Background sync failed:', err.message);
+    });
+
     return {
       success: true,
       lastSynced: finalSyncPayload.lastSynced,
@@ -2098,7 +2105,66 @@ app.get('/api/sync', async (req, res) => {
     const result = await runSync(forceFullSyncRequested);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: 'Sync failed', details: error.message });
+    res.status(500).json({ error: 'Sync failed: ' + error.message });
+  }
+});
+
+// 3b. PostgreSQL Docket & Quotation Queries API
+app.get('/api/postgres/dockets', async (req, res) => {
+  try {
+    const { Pool } = require('pg');
+    const connStr = process.env.POSTGRES_CONNECTION_STRING;
+    if (!connStr) {
+      return res.status(500).json({ error: 'POSTGRES_CONNECTION_STRING not set in .env' });
+    }
+    const pool = new Pool({ connectionString: connStr });
+    
+    const { mail_type, is_gmd_client, docket_status, action_tag, search, limit = 50, offset = 0 } = req.query;
+    
+    let whereClause = ` WHERE 1=1`;
+    const whereParams = [];
+
+    if (mail_type) {
+      whereParams.push(mail_type);
+      whereClause += ` AND mail_type = $${whereParams.length}`;
+    }
+    if (is_gmd_client !== undefined) {
+      whereParams.push(is_gmd_client === 'true');
+      whereClause += ` AND is_gmd_client = $${whereParams.length}`;
+    }
+    if (docket_status) {
+      whereParams.push(docket_status);
+      whereClause += ` AND docket_status = $${whereParams.length}`;
+    }
+    if (action_tag) {
+      whereParams.push(action_tag);
+      whereClause += ` AND action_tag = $${whereParams.length}`;
+    }
+    if (search) {
+      whereParams.push(`%${search}%`);
+      whereClause += ` AND (subject ILIKE $${whereParams.length} OR docket_no ILIKE $${whereParams.length} OR sender ILIKE $${whereParams.length} OR body ILIKE $${whereParams.length})`;
+    }
+
+    const query = `SELECT * FROM docket_quotation_threads ${whereClause} ORDER BY date DESC NULLS LAST LIMIT $${whereParams.length + 1} OFFSET $${whereParams.length + 2}`;
+    const queryParams = [...whereParams, Number(limit), Number(offset)];
+
+    const countQuery = `SELECT COUNT(*) as total FROM docket_quotation_threads ${whereClause}`;
+
+    const [rowsRes, countRes] = await Promise.all([
+      pool.query(query, queryParams),
+      pool.query(countQuery, whereParams)
+    ]);
+
+    await pool.end();
+
+    res.json({
+      total: Number(countRes.rows[0]?.total || 0),
+      count: rowsRes.rows.length,
+      data: rowsRes.rows
+    });
+  } catch (error) {
+    console.error('Error querying PostgreSQL dockets:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
