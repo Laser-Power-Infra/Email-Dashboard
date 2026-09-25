@@ -177,6 +177,10 @@ function isDateOrInvalid(str) {
   if (/^\d{4}[/-]\d{1,2}[/-]\d{1,2}/.test(s)) return true;
   if (/^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[/-]\d+/i.test(s)) return true;
   if (/\d{1,2}:\d{2}(:\d{2})?/.test(s)) return true;
+  if (/^(2020|2021|2022|2023|2024|2025|2026|2027)$/.test(s)) return true;
+  if (/^na[ -_]+\d+/i.test(s)) return true;
+  if (/[ -_]\d{2}[/-]\d{2}[/-]\d{4}$/.test(s)) return true;
+
   // Reject long descriptive phrases (e.g. "Name of Work: Supply of...")
   if (s.includes(' ') && s.split(/\s+/).length > 4) return true;
   if (/^(name\s+of\s+work|subject|description)/i.test(s)) return true;
@@ -187,16 +191,43 @@ function isDateOrInvalid(str) {
 /**
  * Extract Docket Number from subject, body, or tender match
  */
-function extractDocketNumber(subject, body, linkedDocketNo) {
+function extractDocketNumber(subject, body, linkedDocketNo, attachNames) {
   // If linked docket exists and is valid
   if (linkedDocketNo && !isDateOrInvalid(linkedDocketNo)) {
     return String(linkedDocketNo).trim();
   }
 
   const sub = subject || '';
-  const bod = (body || '').slice(0, 1500);
+  const bod = body || '';
+  const att = attachNames || '';
+  const combined = `${sub} ${bod} ${att}`;
 
-  // 1. "Create the docket | <Docket / Bid No> | <Authority>"
+  // 1. GMD Dockets / Quotations (Priority: Attachment filename -> Subject -> Body)
+  const gmdAttMatch = att.match(/(?:^|[^A-Za-z0-9])(GMD[\/_\-](\d{2,4})[\/_\-](\d{2,4})[\/_\-](\d+))(?:[^A-Za-z0-9]|$)/i);
+  if (gmdAttMatch) {
+    const normalized = `GMD/${gmdAttMatch[2]}-${gmdAttMatch[3]}/${gmdAttMatch[4]}`;
+    if (!isDateOrInvalid(normalized)) {
+      return normalized;
+    }
+  }
+
+  const gmdSubMatch = sub.match(/(?:^|[^A-Za-z0-9])(GMD[\/_\-](\d{2,4})[\/_\-](\d{2,4})[\/_\-](\d+))(?:[^A-Za-z0-9]|$)/i);
+  if (gmdSubMatch) {
+    const normalized = `GMD/${gmdSubMatch[2]}-${gmdSubMatch[3]}/${gmdSubMatch[4]}`;
+    if (!isDateOrInvalid(normalized)) {
+      return normalized;
+    }
+  }
+
+  const gmdBodMatch = bod.match(/(?:^|[^A-Za-z0-9])(GMD[\/_\-](\d{2,4})[\/_\-](\d{2,4})[\/_\-](\d+))(?:[^A-Za-z0-9]|$)/i);
+  if (gmdBodMatch) {
+    const normalized = `GMD/${gmdBodMatch[2]}-${gmdBodMatch[3]}/${gmdBodMatch[4]}`;
+    if (!isDateOrInvalid(normalized)) {
+      return normalized;
+    }
+  }
+
+  // 2. "Create the docket | <Docket / Bid No> | <Authority>"
   const createMatch = sub.match(/Create\s+(?:the|a)\s+docket\s*\|\s*([^|]+)/i);
   if (createMatch && createMatch[1]) {
     let candidate = createMatch[1].trim();
@@ -217,27 +248,30 @@ function extractDocketNumber(subject, body, linkedDocketNo) {
     if (!isDateOrInvalid(candidate)) return candidate;
   }
 
-  // 2. GeM Bid Number anywhere in Subject or Body
+  // 3. GeM Bid Number anywhere in Subject or Body
   const gemMatch = (sub + ' ' + bod).match(/\b(GEM\/\d{4}\/[A-Z]\/\d+)\b/i);
   if (gemMatch) return gemMatch[1].toUpperCase();
 
-  // 3. State e-Procurement Portal Tender IDs (e.g. 2026_WBSED_123456_1, 2026_KSEB_864691_1)
+  // 4. State e-Procurement Portal Tender IDs (e.g. 2026_WBSED_123456_1, 2026_KSEB_864691_1)
   const eprocMatch = (sub + ' ' + bod).match(/\b(\d{4}_[A-Z0-9]+_\d+_\d+)\b/i);
   if (eprocMatch) return eprocMatch[1];
 
-  // 4. Explicit "Tender No: XYZ" / "NIT No: XYZ" / "Docket No: XYZ" / "RFQ No: XYZ"
+  // 5. Explicit "Tender No: XYZ" / "NIT No: XYZ" / "Docket No: XYZ" / "RFQ No: XYZ"
   const tenderExplicit = (sub + ' ' + bod).match(/\b(?:tender|bid|rfq|nit|docket|dkt|enquiry)[\s._#-]+(?:no|num|number|#)?[\s.:=-]+([A-Za-z0-9\/\-_.\(\)]+)/i);
-  if (tenderExplicit && tenderExplicit[1] && !isDateOrInvalid(tenderExplicit[1])) {
-    return tenderExplicit[1].trim();
+  if (tenderExplicit && tenderExplicit[1]) {
+    const cleaned = tenderExplicit[1].replace(/[\.\)\],;:]+$/, '').trim();
+    if (!isDateOrInvalid(cleaned)) {
+      return cleaned;
+    }
   }
 
-  // 5. Railway 8-digit tender number (e.g. "10265055") when accompanied by tender / railway context
+  // 6. Railway 8-digit tender number (e.g. "10265055") when accompanied by tender / railway context
   const railwayMatch = sub.match(/\b([1-9][0-9]{7})\b/);
   if (railwayMatch && /railway|rail|stores|rly|gem|tender|docket/i.test(sub) && !isDateOrInvalid(railwayMatch[1])) {
     return railwayMatch[1];
   }
 
-  // 6. UIC Dockets (e.g. UICE006616, UIC-1234)
+  // 7. UIC Dockets (e.g. UICE006616, UIC-1234)
   const uicMatch = (sub + ' ' + bod).match(/\b(UICE?\d{5,10})\b/i);
   if (uicMatch && !isDateOrInvalid(uicMatch[1])) {
     return uicMatch[1].toUpperCase();
@@ -309,7 +343,7 @@ function isDocketRelated(subject, body, ocrText, linkedDocketNo) {
  */
 function isQuotationRelated(subject, body) {
   const sub = (subject || '').toLowerCase();
-  const bod = (body || '').slice(0, 2000).toLowerCase();
+  const bod = (body || '').toLowerCase();
 
   const isQuoteSubject = /(quotation|quote|\brfq\b|enquiry|inquiry|price offer|commercial offer|price schedule|budgetary quote|rate offer|request for quotation|input requires)/i.test(sub);
   const isQuoteBody = /(request for quotation|\brfq\b|please quote|kindly provide your quotation|our lowest rate|price bid|formal quotation|revised quote)/i.test(bod);
@@ -371,8 +405,14 @@ async function processThreadsBatch(pgClient, threads, linkedDocketMap) {
 
   for (const thread of threads) {
     const linkedDocket = linkedDocketMap[thread.id] || null;
-    const isDocket = isDocketRelated(thread.subject, thread.body, thread.ocr_text, linkedDocket);
-    const isQuote = isQuotationRelated(thread.subject, thread.body);
+    const extractedDocketNo = extractDocketNumber(thread.subject, thread.body, linkedDocket, thread.attach_names);
+    let isDocket = isDocketRelated(thread.subject, thread.body, thread.ocr_text, linkedDocket) || Boolean(extractedDocketNo);
+    let isQuote = isQuotationRelated(thread.subject, thread.body);
+
+    if (extractedDocketNo && /^GMD/i.test(extractedDocketNo)) {
+      isDocket = true;
+      isQuote = true;
+    }
 
     if (!isDocket && !isQuote) {
       skippedCount++;
@@ -381,7 +421,6 @@ async function processThreadsBatch(pgClient, threads, linkedDocketMap) {
 
     const gmd = isGmdClient(thread.company, thread.category, thread.sender, thread.to_details);
     const replied = checkIsReplied(thread.msg_count, thread.sender, thread.body);
-    const extractedDocketNo = extractDocketNumber(thread.subject, thread.body, linkedDocket);
 
     let mailType = 'DOCKET';
     if (isDocket && isQuote) {
