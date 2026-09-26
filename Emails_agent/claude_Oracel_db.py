@@ -841,43 +841,14 @@ def extract_gmail_labels(messages_list: List[dict], gmail_service=None) -> str:
     return ", ".join(sorted(labels)) if labels else "[None]"
 
 def thread_has_changed_since(
-    gmail_service, thread_id: str, start_history_id: str
+    gmail_service, thread_id: str, start_history_id: str, current_history_id: Optional[str] = None
 ) -> Optional[bool]:
-    """FIX 9: pass historyTypes to reduce API response volume."""
+    """Fast check: compare stored latest_history_id vs thread's current historyId from Gmail."""
+    if current_history_id and start_history_id:
+        return str(current_history_id).strip() != str(start_history_id).strip()
     if not start_history_id:
-        return None
-    try:
-        page_token = None
-        while True:
-            response = gmail_service.users().history().list(
-                userId="me",
-                startHistoryId=start_history_id,
-                pageToken=page_token,
-                historyTypes=["messageAdded", "messageDeleted"],   # FIX 9
-                fields="history(id,messagesAdded,messagesDeleted,messages),nextPageToken",
-            ).execute()
-            for history in response.get("history", []):
-                for event_list in ("messagesAdded", "messagesDeleted", "messages"):
-                    for item in history.get(event_list, []):
-                        if item.get("threadId") == thread_id:
-                            return True
-            page_token = response.get("nextPageToken")
-            if not page_token:
-                break
-        return False
-    except HttpError as e:
-        status = getattr(getattr(e, 'resp', None), 'status', None)
-        if status == 410:
-            logger.warning(
-                f"Gmail history expired (id={start_history_id}); "
-                f"full refresh required for thread {thread_id}."
-            )
-            return None
-        logger.error(f"History API error for thread {thread_id}: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Failed to query Gmail history for thread {thread_id}: {e}")
-        return None
+        return True
+    return False
 
 def get_message_headers(message: dict) -> dict:
     headers = {}
@@ -1834,19 +1805,17 @@ def process_gmail_batch(
             break
 
         thread_id = thread_summary["id"]
+        current_summary_history_id = str(thread_summary.get("historyId", "") or "").strip()
         logger.info(f"-> Thread {thread_index}/{total_threads} ({thread_id})")
         sys.stdout.flush()
         try:
             existing = existing_rows.get(thread_id)
 
-            # Fast skip via Gmail History API
-            if existing and existing.get("latest_history_id"):
-                changed = thread_has_changed_since(
-                    gmail_service, thread_id, existing["latest_history_id"]
-                )
-                if changed is False:
+            # Fast skip: If thread exists in DB and its latest_history_id matches the current historyId from Gmail, no new reply exists
+            if existing and existing.get("latest_history_id") and current_summary_history_id:
+                if str(existing["latest_history_id"]).strip() == current_summary_history_id:
                     skipped_count += 1
-                    logger.info(f"Skip {thread_id}: no changes.")
+                    logger.info(f"Skip {thread_id}: no changes (historyId {current_summary_history_id} unchanged).")
                     continue
 
             messages = get_thread_messages(gmail_service, thread_id)
@@ -2128,8 +2097,8 @@ def process_gmail_batch(
             if fails >= MAX_THREAD_FAILURES:
                 logger.error(f"[GIVE UP] Thread {thread_id} failed {fails} times; skipping it from now on.")
 
-    # One scan trigger for the whole batch instead of one blocking POST per inserted row.
-    if inserted_count:
+    # One scan trigger for the whole batch if new threads were inserted or existing threads updated with replies
+    if inserted_count or (processed_count - skipped_count) > 0:
         trigger_backend_tender_scan()
 
     update_processing_status(
@@ -2159,26 +2128,32 @@ def process_gmail_batch(
         'last_thread_id':    batch_threads[-1]["id"] if batch_threads else None,
     }
 
-def load_processed_thread_ids():
+def load_processed_threads_state() -> Dict[str, dict]:
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
-        # Bounded to the search window (7 days) plus a day of slack; the full table
-        # was being read on every 45-60s poll and grows without limit.
+        cursor = conn.cursor(dictionary=True)
+        # Bounded to the search window (14 days) plus slack
         cursor.execute(
-            "SELECT DISTINCT thread_id FROM threads "
+            "SELECT thread_id, latest_history_id, msg_count FROM threads "
             "WHERE thread_id IS NOT NULL AND thread_id != '' "
-            "AND (date IS NULL OR date > NOW() - INTERVAL 8 DAY)"
+            "AND (date IS NULL OR date > NOW() - INTERVAL 14 DAY)"
         )
-        ids = set(row[0] for row in cursor.fetchall())
+        rows = cursor.fetchall()
+        cursor.close()
         conn.close()
-        return ids
+        return {
+            row["thread_id"]: {
+                "latest_history_id": str(row["latest_history_id"] or "").strip(),
+                "msg_count": row["msg_count"] or 1
+            }
+            for row in rows
+        }
     except Exception as e:
-        logger.warning(f"Could not load processed thread_ids from DB: {e}")
-        return set()
+        logger.warning(f"Could not load processed threads state from DB: {e}")
+        return {}
 
 # -----------------------------------------------------------------------
-# CONTINUOUS RUN  (Filter already processed thread_ids from DB)
+# CONTINUOUS RUN  (Filter unchanged threads, process new threads and replies)
 # -----------------------------------------------------------------------
 def run_continuous():
     logger.info("="*70)
@@ -2200,8 +2175,8 @@ def run_continuous():
             if not gmail_service or iteration_count % 20 == 1:
                 gmail_service, drive_service = get_google_services()
 
-            # Always reload processed thread IDs from MySQL DB to stay 100% synchronized
-            processed_thread_ids = load_processed_thread_ids()
+            # Always reload processed thread states from MySQL DB to detect new replies
+            processed_threads_state = load_processed_threads_state()
 
             setup_conn = get_db_connection()
             email_map = load_all_email_mapping(setup_conn)
@@ -2211,15 +2186,21 @@ def run_continuous():
             current_query = get_search_query(lookback_days=7, include_before=False)
             all_threads = search_threads(gmail_service, current_query)
             
-            # Filter ONLY threads that are not yet stored in MySQL DB
-            # Skip threads already stored, and threads that have failed too many times.
-            # Without the second filter a permanently-failing thread is re-downloaded,
-            # re-uploaded and re-OCR'd on every single poll.
-            unprocessed_threads = [
-                t for t in all_threads
-                if t["id"] not in processed_thread_ids
-                and _THREAD_FAILURES.get(t["id"], 0) < MAX_THREAD_FAILURES
-            ]
+            # Filter threads that are:
+            # 1. Brand new threads not in DB
+            # 2. Existing threads whose Gmail historyId has changed (new replies or messages received)
+            unprocessed_threads = []
+            for t in all_threads:
+                tid = t["id"]
+                if _THREAD_FAILURES.get(tid, 0) >= MAX_THREAD_FAILURES:
+                    continue
+                if tid not in processed_threads_state:
+                    unprocessed_threads.append(t)
+                else:
+                    db_history_id = processed_threads_state[tid]["latest_history_id"]
+                    gmail_history_id = str(t.get("historyId", "") or "").strip()
+                    if gmail_history_id and db_history_id != gmail_history_id:
+                        unprocessed_threads.append(t)
 
             if not unprocessed_threads:
                 logger.info(f"All {len(all_threads)} threads up-to-date. Listening for new incoming emails (check #{iteration_count})...")
