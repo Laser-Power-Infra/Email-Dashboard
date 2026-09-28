@@ -623,7 +623,7 @@ async function syncDocketQuotationMails({ batchSize = 500, maxRows = null, since
                 subject, body, attach_names, attach_links, ocr_text, ai_summary,
                 category, sub_category, company, codeword, user_labels
          FROM \`${tableName}\`
-         ORDER BY id DESC
+         ORDER BY last_updated DESC
          LIMIT ?`,
         [recentLimit]
       );
@@ -642,25 +642,21 @@ async function syncDocketQuotationMails({ batchSize = 500, maxRows = null, since
     const [[{ totalThreads }]] = await mysqlPool.query(countSql, countParams);
     console.log(`[2/3] Total threads in MySQL to evaluate: ${totalThreads}`);
 
-    // 3. Process in batches
-    let offset = 0;
+    // 3. Process in batches (keyset pagination on id for high performance)
+    let lastSeenId = sinceId ? sinceId - 1 : 0;
     const limit = batchSize;
 
     while (true) {
       let batchSql = `SELECT id, thread_id, msg_count, date, sender, sender_details, cc_details, to_details,
                              subject, body, attach_names, attach_links, ocr_text, ai_summary,
                              category, sub_category, company, codeword, user_labels
-                      FROM \`${tableName}\``;
-      const batchParams = [];
-      if (sinceId) {
-        batchSql += ` WHERE id >= ?`;
-        batchParams.push(sinceId);
-      }
-      batchSql += ` ORDER BY id ASC LIMIT ? OFFSET ?`;
-      batchParams.push(limit, offset);
+                      FROM \`${tableName}\`
+                      WHERE id > ?
+                      ORDER BY id ASC LIMIT ?`;
 
-      const [threads] = await mysqlPool.query(batchSql, batchParams);
+      const [threads] = await mysqlPool.query(batchSql, [lastSeenId, limit]);
       if (threads.length === 0) break;
+      lastSeenId = threads[threads.length - 1].id;
 
       const stats = await processThreadsBatch(pgPool, threads, linkedDocketMap);
       totalProcessed += threads.length;
@@ -669,8 +665,7 @@ async function syncDocketQuotationMails({ batchSize = 500, maxRows = null, since
       totalSkipped += stats.skippedCount;
       totalNewDocket += stats.newDocketCount;
 
-      offset += threads.length;
-      console.log(`[Progress] Processed: ${totalProcessed}/${totalThreads} | Synced to Postgres: ${totalInserted + totalUpdated} (New: ${totalInserted}, Updated: ${totalUpdated}, New Docket Tags: ${totalNewDocket}) | Skipped: ${totalSkipped}`);
+      console.log(`[Progress] Processed: ${totalProcessed}/${totalThreads} (MySQL ID: ${lastSeenId}) | Synced: ${totalInserted + totalUpdated} (New: ${totalInserted}, Updated: ${totalUpdated}, New Dockets: ${totalNewDocket}) | Skipped: ${totalSkipped}`);
 
       if (maxRows && totalProcessed >= maxRows) break;
     }
@@ -717,6 +712,10 @@ if (require.main === module) {
 
 module.exports = {
   syncDocketQuotationMails,
+  processThreadsBatch,
+  cleanAttachments,
+  getPgPool,
+  getMysqlPool,
   isDocketRelated,
   isQuotationRelated,
   extractDocketNumber,
