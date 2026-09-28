@@ -341,14 +341,18 @@ function isDocketRelated(subject, body, ocrText, linkedDocketNo) {
 /**
  * Check if thread is Quotation / RFQ Related
  */
-function isQuotationRelated(subject, body) {
+function isQuotationRelated(subject, body, attachNames, userLabels) {
   const sub = (subject || '').toLowerCase();
   const bod = (body || '').toLowerCase();
+  const att = (attachNames || '').toLowerCase();
+  const lbl = (userLabels || '').toLowerCase();
 
-  const isQuoteSubject = /(quotation|quote|\brfq\b|enquiry|inquiry|price offer|commercial offer|price schedule|budgetary quote|rate offer|request for quotation|input requires)/i.test(sub);
-  const isQuoteBody = /(request for quotation|\brfq\b|please quote|kindly provide your quotation|our lowest rate|price bid|formal quotation|revised quote)/i.test(bod);
+  const isQuoteSubject = /(quotation|quote|\brfq\b|enquiry|inquiry|requirement of|requirement for|price offer|commercial offer|techno-commercial offer|techno commercial offer|price schedule|budgetary quote|rate offer|request for quotation|input requires|offer for|rate for)/i.test(sub);
+  const isQuoteBody = /(request for quotation|\brfq\b|please quote|kindly provide your quotation|our lowest rate|price bid|formal quotation|revised quote|techno-commercial offer|techno commercial offer|please share us your|requirement of|requirement for|offer for)/i.test(bod);
+  const isQuoteAttach = /(quotation|quote|_qtn|_gmd_|rfq|rate_offer)/i.test(att);
+  const isQuoteLabel = /(quotation|gmd clients|quote)/i.test(lbl);
 
-  return isQuoteSubject || isQuoteBody;
+  return isQuoteSubject || isQuoteBody || isQuoteAttach || isQuoteLabel;
 }
 
 /**
@@ -407,7 +411,7 @@ async function processThreadsBatch(pgClient, threads, linkedDocketMap) {
     const linkedDocket = linkedDocketMap[thread.id] || null;
     const extractedDocketNo = extractDocketNumber(thread.subject, thread.body, linkedDocket, thread.attach_names);
     let isDocket = isDocketRelated(thread.subject, thread.body, thread.ocr_text, linkedDocket) || Boolean(extractedDocketNo);
-    let isQuote = isQuotationRelated(thread.subject, thread.body);
+    let isQuote = isQuotationRelated(thread.subject, thread.body, thread.attach_names, thread.user_labels);
 
     if (extractedDocketNo && /^GMD/i.test(extractedDocketNo)) {
       isDocket = true;
