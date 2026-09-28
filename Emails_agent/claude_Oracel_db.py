@@ -155,7 +155,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('gmail_pipeline.log', encoding='utf-8'),
     ],
 )
 logger = logging.getLogger(__name__)
@@ -1097,11 +1096,19 @@ def extract_text_from_pdf(file_bytes: bytes, file_name: str) -> str:
             from pdf2image import convert_from_bytes
             import pytesseract
             # Limit page OCR to first 5 pages and 120 DPI for faster/lower CPU extraction
-            images = convert_from_bytes(file_bytes, dpi=120, first_page=1, last_page=5)
-            for image in images:
-                text = pytesseract.image_to_string(image.convert('L'))
-                if text and text.strip():
-                    parts.append(text.strip())
+            # Use isolated TemporaryDirectory so all poppler render files are wiped immediately
+            with tempfile.TemporaryDirectory() as temp_dir:
+                images = convert_from_bytes(file_bytes, dpi=120, first_page=1, last_page=5, output_folder=temp_dir)
+                for image in images:
+                    try:
+                        text = pytesseract.image_to_string(image.convert('L'))
+                        if text and text.strip():
+                            parts.append(text.strip())
+                    finally:
+                        try:
+                            image.close()
+                        except Exception:
+                            pass
         except Exception as e:
             if "poppler" in str(e).lower():
                 return f"[PDF OCR skipped – poppler not installed: {file_name}]"
@@ -1121,24 +1128,29 @@ def extract_text_from_image(file_bytes: bytes, file_name: str) -> str:
     try:
         from PIL import Image, ImageEnhance
         import pytesseract
-        image = Image.open(io.BytesIO(file_bytes))
-        if image.mode == 'RGBA':
-            bg    = Image.new('RGBA', image.size, (255, 255, 255))
-            image = Image.alpha_composite(bg, image)
-        image = image.convert('L')
-        image = ImageEnhance.Contrast(image).enhance(2.0)
-        image = ImageEnhance.Sharpness(image).enhance(2.0)
-        results = []
-        # Try fast PSM 6 first, and exit immediately if text is extracted
-        for cfg in ['--psm 6', '--psm 3']:
+        with Image.open(io.BytesIO(file_bytes)) as raw_image:
+            image = raw_image
+            if image.mode == 'RGBA':
+                bg    = Image.new('RGBA', image.size, (255, 255, 255))
+                image = Image.alpha_composite(bg, image)
+            image = image.convert('L')
+            image = ImageEnhance.Contrast(image).enhance(2.0)
+            image = ImageEnhance.Sharpness(image).enhance(2.0)
+            results = []
+            # Try fast PSM 6 first, and exit immediately if text is extracted
+            for cfg in ['--psm 6', '--psm 3']:
+                try:
+                    text = pytesseract.image_to_string(image, config=cfg).strip()
+                    if text:
+                        results.append(text)
+                        break  # Early exit on successful extraction
+                except Exception as e:
+                    logger.debug(f"OCR config {cfg} failed: {e}")
             try:
-                text = pytesseract.image_to_string(image, config=cfg).strip()
-                if text:
-                    results.append(text)
-                    break  # Early exit on successful extraction
-            except Exception as e:
-                logger.debug(f"OCR config {cfg} failed: {e}")
-        return "\n\n[OCR Results]\n\n".join(results) if results else "[No text found in image]"
+                image.close()
+            except Exception:
+                pass
+            return "\n\n[OCR Results]\n\n".join(results) if results else "[No text found in image]"
     except Exception as e:
         logger.error(f"Image OCR failed for {file_name}: {e}")
         return f"[Image OCR failed: {e}]"
@@ -2218,6 +2230,7 @@ def run_continuous():
             logger.info(f"Cumulative important: {total_important}")
 
             batch_number += 1
+            gc.collect()
             logger.info(f"Checking for new incoming emails in {POLL_INTERVAL_SECONDS}s (1 minute)...")
             time.sleep(POLL_INTERVAL_SECONDS)
 
@@ -2226,6 +2239,7 @@ def run_continuous():
             break
         except Exception as e:
             logger.error(f"Batch error: {e}", exc_info=True)
+            gc.collect()
             gmail_service = None # Force fresh session reconnect on error
             logger.info("Waiting 30s before retry...")
             time.sleep(30)
