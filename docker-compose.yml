@@ -14,6 +14,11 @@ services:
       - backend
     networks:
       - match_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   # 2. Backend Express API & Matching Engine on Port 6003
   backend:
@@ -49,6 +54,11 @@ services:
       - 1.1.1.1
     networks:
       - match_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   # 3. Gmail OCR & Email Processing Pipeline Agent
   emails-agent:
@@ -57,8 +67,10 @@ services:
       dockerfile: Dockerfile
     container_name: match_emails_agent
     # restart: always
-    # Backstop so OCR work can never take the whole host again.
+    # Guardrails: CPU and Memory limits so OCR can never exhaust host/WSL RAM and crash Docker
     cpus: 2
+    mem_limit: 3g
+    mem_reservation: 512m
     environment:
       - OLLAMA_HOST=http://host.docker.internal:11434
       - OMP_THREAD_LIMIT=1
@@ -73,6 +85,11 @@ services:
       - 1.1.1.1
     networks:
       - match_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
 
 networks:
   match_net:
