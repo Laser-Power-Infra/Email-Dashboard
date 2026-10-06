@@ -38,7 +38,7 @@ services:
       - DB_NAME=defaultdb
       - DB_PORT=3306
       - DB_TABLE=threads
-      - POSTGRES_CONNECTION_STRING=postgresql://postgres:postgres@192.168.1.190:5432/gmd-backup-utsab
+      - POSTGRES_CONNECTION_STRING=postgresql://postgres:postgres@192.168.1.190:5432/gmd-quotation
       - GOOGLE_SPREADSHEET_ID=1GTwzxMgViohbCimXqfiBZBJsKbCSr7hCgbcHF_En1VE
       - GOOGLE_SHEET_GID=1274623128
       - SYNC_INTERVAL_MS=14400000
