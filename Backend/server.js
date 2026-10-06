@@ -2107,9 +2107,22 @@ app.get('/api/sync', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: 'Sync failed: ' + error.message });
   }
+// 3b. Trigger PostgreSQL Docket & Quotation sync
+app.all('/api/sync-docket-quotations', async (req, res) => {
+  try {
+    const limit = req.query.limit ? Number(req.query.limit) : 200;
+    const forceFull = req.query.full === 'true' || req.query.full === '1';
+    const stats = forceFull
+      ? await syncDocketQuotationMails()
+      : await syncDocketQuotationMails({ recentLimit: limit });
+    res.json({ success: true, stats });
+  } catch (error) {
+    console.error('Docket & Quotation PostgreSQL sync failed:', error);
+    res.status(500).json({ error: 'Sync failed: ' + error.message });
+  }
 });
 
-// 3b. PostgreSQL Docket & Quotation Queries API
+// 3c. PostgreSQL Docket & Quotation Queries API
 app.get('/api/postgres/dockets', async (req, res) => {
   try {
     const { Pool } = require('pg');
@@ -4992,9 +5005,7 @@ app.post('/api/sync/scan-new', async (req, res) => {
   }
 });
 
-// Start background automatic sync (default: 4 hours / 14,400,000 ms)
-// To change interval: set SYNC_INTERVAL_MS environment variable (in milliseconds)
-// To force full sync of all data: set FORCE_FULL_SYNC=true
+// Start background automatic sync (default: 4 hours / 14,400,000 ms for Google Sheets & Tenders)
 const AUTO_SYNC_INTERVAL = Number(process.env.SYNC_INTERVAL_MS) || 4 * 60 * 60 * 1000;  // 4 hours
 console.log(`Scheduling background auto-sync every ${AUTO_SYNC_INTERVAL / 1000} seconds (${AUTO_SYNC_INTERVAL / (60 * 60 * 1000)} hours).`);
 setInterval(async () => {
@@ -5007,6 +5018,27 @@ setInterval(async () => {
     }
   }
 }, AUTO_SYNC_INTERVAL);
+
+// Dedicated PostgreSQL Docket & Quotation Auto-Sync (runs every 60 seconds)
+const DOCKET_SYNC_INTERVAL_MS = Number(process.env.DOCKET_SYNC_INTERVAL_MS) || 60 * 1000; // 1 minute
+let isDocketSyncing = false;
+
+async function runPeriodicDocketSync() {
+  if (isDocketSyncing) return;
+  isDocketSyncing = true;
+  try {
+    await syncDocketQuotationMails({ recentLimit: 150 });
+  } catch (err) {
+    if (err.message && !err.message.includes('POSTGRES_CONNECTION_STRING is not defined')) {
+      console.warn('[PostgreSQL Auto-Sync Warning]:', err.message);
+    }
+  } finally {
+    isDocketSyncing = false;
+  }
+}
+
+console.log(`Scheduling PostgreSQL Docket & Quotation auto-sync every ${DOCKET_SYNC_INTERVAL_MS / 1000} seconds.`);
+setInterval(runPeriodicDocketSync, DOCKET_SYNC_INTERVAL_MS);
 
 // Start Server
 
