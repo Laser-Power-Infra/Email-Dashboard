@@ -2229,6 +2229,14 @@ def run_continuous():
             total_important += result.get('batch_important', 0)
             logger.info(f"Cumulative important: {total_important}")
 
+            # Notify backend to immediately sync newly processed emails into PostgreSQL docket/quotation database
+            for sync_url in ("http://backend:6003/api/sync-docket-quotations?limit=100", "http://localhost:6003/api/sync-docket-quotations?limit=100"):
+                try:
+                    requests.post(sync_url, timeout=3)
+                    break
+                except Exception:
+                    pass
+
             batch_number += 1
             gc.collect()
             logger.info(f"Checking for new incoming emails in {POLL_INTERVAL_SECONDS}s (1 minute)...")
