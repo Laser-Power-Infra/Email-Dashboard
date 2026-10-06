@@ -98,8 +98,15 @@ async function initializePgTable() {
       CREATE INDEX IF NOT EXISTS idx_dqt_mail_type ON docket_quotation_threads(mail_type);
       CREATE INDEX IF NOT EXISTS idx_dqt_date ON docket_quotation_threads(date DESC);
       CREATE INDEX IF NOT EXISTS idx_dqt_company ON docket_quotation_threads(company);
+
+      -- Ensure primary key sequence is always in sync with MAX(id) to avoid duplicate key errors
+      SELECT setval(
+        pg_get_serial_sequence('docket_quotation_threads', 'id'),
+        COALESCE((SELECT MAX(id) FROM docket_quotation_threads), 0) + 1,
+        false
+      );
     `);
-    console.log('[PostgreSQL] Table "docket_quotation_threads" & indexes initialized successfully.');
+    console.log('[PostgreSQL] Table "docket_quotation_threads", indexes & sequence initialized successfully.');
   } finally {
     client.release();
   }
