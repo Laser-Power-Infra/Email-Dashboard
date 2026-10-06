@@ -2107,6 +2107,8 @@ app.get('/api/sync', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: 'Sync failed: ' + error.message });
   }
+});
+
 // 3b. Trigger PostgreSQL Docket & Quotation sync
 app.all('/api/sync-docket-quotations', async (req, res) => {
   try {
