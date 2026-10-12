@@ -67,7 +67,7 @@ services:
       context: ./Emails_agent
       dockerfile: Dockerfile
     container_name: match_emails_agent
-    # restart: always
+    restart: always
     # Guardrails: CPU and Memory limits so OCR can never exhaust host/WSL RAM and crash Docker
     cpus: 2
     mem_limit: 3g
