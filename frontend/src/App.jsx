@@ -2198,15 +2198,6 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const recheckAiEngine = async () => {
-    try {
-      await fetch('/api/ai/health/check', { method: 'POST' });
-    } catch {
-      // ignore, fetchStatus below shows the result
-    }
-    fetchStatus();
-  };
-
   // Poll for background match updates and sync status every 30 seconds
   useEffect(() => {
     const interval = setInterval(() => {
@@ -3129,29 +3120,6 @@ function App() {
             )}
           </div>
         </header>
-
-        {status.aiEngine && status.aiEngine.status && status.aiEngine.status !== 'ok' && status.aiEngine.status !== 'unknown' && status.aiEngine.reachable !== false && (
-          <div className="ai-engine-banner" role="alert">
-            <AlertCircle size={16} />
-            <div style={{ flex: 1 }}>
-              <strong>
-                AI Engine (Ollama) {status.aiEngine.status === 'degraded' ? 'model missing' : 'offline'}
-                {status.aiEngine.ollamaRole === 'primary' ? ' — matching summaries are using the regex/rule-based fallback.' : ' — fallback AI provider unavailable.'}
-              </strong>
-              <div className="ai-engine-banner-detail">
-                {status.aiEngine.error || 'Health check failed.'}
-                {status.aiEngine.downSince ? ` Since ${formatDateTime(status.aiEngine.downSince)}.` : ''}
-                {status.aiEngine.nextCheckInMs ? ` Retrying automatically every ${Math.round(status.aiEngine.nextCheckInMs / 1000)}s.` : ''}
-              </div>
-              {Array.isArray(status.aiEngine.configWarnings) && status.aiEngine.configWarnings.length > 0 && (
-                <div className="ai-engine-banner-detail">Config: {status.aiEngine.configWarnings.join(' ')}</div>
-              )}
-            </div>
-            <button type="button" className="btn btn-secondary btn-small" onClick={recheckAiEngine}>
-              <RefreshCw size={12} /> Re-check
-            </button>
-          </div>
-        )}
 
         {activeTab === 'mailbox' && (
           <div style={{ marginTop: '1rem' }}>
