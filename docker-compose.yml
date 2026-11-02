@@ -43,9 +43,17 @@ services:
       - GOOGLE_SHEET_GID=1274623128
       - SYNC_INTERVAL_MS=14400000
       - OLLAMA_HOST=http://host.docker.internal:11434
+      - MAILBOX_CREDENTIALS_PATH=/app/mailbox_config/credentials.json
+      - MAILBOX_TOKEN_PATH=/app/mailbox_config/token.json
+      - MAILBOX_PAGE_SIZE=10
+      - MAILBOX_MAX_CONCURRENCY=2
+      - MAILBOX_LIST_CACHE_TTL_SECONDS=60
+      - MAILBOX_CACHE_TTL_SECONDS=300
+      - GMAIL_QUOTA_RETRY_SECONDS=60
     volumes:
       - ./Backend/data:/app/data
       - ./Backend/cache:/app/cache
+      - ./Backend/mailbox_config:/app/mailbox_config
       - ./:/app/root_config:ro
       - ./token.json:/app/root_config/token.json:rw
     extra_hosts:

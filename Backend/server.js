@@ -42,6 +42,7 @@ for (const envP of envPaths) {
 const { extractTenderTokens, checkMatch, checkMatchNormalized, checkMatchCompiled, makeTokenRegex } = require('./matcher');
 const { shouldUseFullSync } = require('./syncStrategy');
 const { syncDocketQuotationMails } = require('./docketQuotationSync');
+const gmailMailbox = require('./gmailMailbox');
 
 const COMPANY_CANON = {
   laser: 'Laser', gmd: 'GMD', uic: 'UIC', ceebuild: 'CEEBUILD',
@@ -332,6 +333,51 @@ function releaseDbConnection(conn) {
       conn.end().catch(() => {});
     }
   } catch (e) {}
+}
+
+async function getThreadIdForDbId(dbId) {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const table = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const [rows] = await conn.execute(
+      `SELECT thread_id FROM \`${table}\` WHERE ${colId} = ? LIMIT 1`,
+      [dbId]
+    );
+    return rows.length > 0 ? rows[0].thread_id : null;
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
+}
+
+async function updateThreadReadState(threadId, state) {
+  if (!threadId || !state) return;
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const table = process.env.DB_TABLE || 'threads';
+    const unreadCount = Number(state.unreadCount) || 0;
+    if (state.lastMessageId) {
+      await conn.execute(
+        `UPDATE \`${table}\`
+         SET is_unread = ?, unread_count = ?, is_starred = ?, last_message_id = ?
+         WHERE thread_id = ?`,
+        [unreadCount > 0 ? 1 : 0, unreadCount, state.isStarred ? 1 : 0, state.lastMessageId, threadId]
+      );
+    } else {
+      await conn.execute(
+        `UPDATE \`${table}\`
+         SET is_unread = ?, unread_count = ?, is_starred = ?
+         WHERE thread_id = ?`,
+        [unreadCount > 0 ? 1 : 0, unreadCount, state.isStarred ? 1 : 0, threadId]
+      );
+    }
+  } catch (err) {
+    console.warn('[Mailbox] Could not update local read state:', err.message);
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
 }
 
 function getOllamaBaseUrl() {
@@ -760,6 +806,24 @@ async function initializeDatabase() {
     } catch (colErr) {
       if (colErr.code !== 'ER_DUP_FIELDNAME' && !colErr.message.includes('duplicate column')) {
         console.error('Failed to add codeword column:', colErr.message);
+      }
+    }
+
+    const mailboxColumns = [
+      ['is_unread', 'TINYINT(1) DEFAULT 0'],
+      ['unread_count', 'INT DEFAULT 0'],
+      ['is_starred', 'TINYINT(1) DEFAULT 0'],
+      ['last_message_id', 'VARCHAR(255) DEFAULT NULL'],
+    ];
+    for (const [columnName, columnType] of mailboxColumns) {
+      try {
+        const threadsTable = process.env.DB_TABLE || 'threads';
+        await conn.query(`ALTER TABLE \`${threadsTable}\` ADD COLUMN ${columnName} ${columnType}`);
+        console.log(`Added ${columnName} column to ${threadsTable} table.`);
+      } catch (colErr) {
+        if (colErr.code !== 'ER_DUP_FIELDNAME' && !colErr.message.includes('duplicate column')) {
+          console.error(`Failed to add ${columnName} column:`, colErr.message);
+        }
       }
     }
 
@@ -2400,7 +2464,7 @@ app.get('/api/tenders/:rowNumber/emails', async (req, res) => {
     let query = `
       SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colBody} as body,
              t.${colSender} as sender, t.${colDate} as date_received, t.ai_summary as summary, t.to_details, t.cc_details,
-             t.company, t.category, t.sub_category,
+             t.company, t.category, t.sub_category, t.is_unread, t.unread_count, t.is_starred, t.last_message_id,
              LEFT(t.ocr_text, 7000) as ocr_text, t.attach_names, t.attach_links,
              tm.matched_token, tm.matched_token as matchedToken, tm.confidence
       FROM \`${threadsTable}\` t
@@ -2668,7 +2732,7 @@ app.get('/api/recent-matches', async (req, res) => {
 
     let query = `
       SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender, t.${colDate} as date_received, t.ai_summary as summary, t.to_details, t.cc_details,
-             t.company, t.category, t.sub_category,
+             t.company, t.category, t.sub_category, t.is_unread, t.unread_count, t.is_starred, t.last_message_id,
              LEFT(t.ocr_text, 3000) as ocr_text, tm.docket_no, tm.tender_no, tm.matched_token, tm.matched_token as matchedToken, tm.confidence
       FROM \`${threadsTable}\` t
       JOIN tender_matches tm ON t.${colId} = tm.thread_db_id
@@ -2728,7 +2792,7 @@ app.get('/api/matched-emails', async (req, res) => {
     let query = `
       SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender,
              DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date_received,
-             t.ai_summary as summary, t.company, t.to_details,
+             t.ai_summary as summary, t.company, t.to_details, t.is_unread, t.unread_count, t.is_starred, t.last_message_id,
              LEFT(t.ocr_text, 3000) as ocr_text, t.${colBody} as body, t.attach_names, t.attach_links,
              tm.docket_no, tm.tender_no, tm.matched_token, tm.matched_token as matchedToken, tm.confidence
       FROM \`${threadsTable}\` t
@@ -2824,7 +2888,7 @@ app.get('/api/emails/:id/reply-suggestion', async (req, res) => {
 
     // Retrieve email body, subject, sender, ocr_text, attach_names, attach_links
     const [rows] = await conn.execute(`
-      SELECT ${colSubject} as subject, ${colBody} as body, ${colSender} as sender, ocr_text, attach_names, attach_links, ai_summary
+      SELECT ${colSubject} as subject, ${colBody} as body, ${colSender} as sender, ocr_text, attach_names, attach_links, ai_summary, thread_id, last_message_id
       FROM \`${threadsTable}\` 
       WHERE ${colId} = ?
     `, [emailId]);
@@ -2882,7 +2946,9 @@ AI Summary of Email: ${email.ai_summary || ''}`;
       to: email.sender,
       subject: email.subject.toLowerCase().startsWith('re:') ? email.subject : `Re: ${email.subject}`,
       suggestedReply: suggestion,
-      attachments: attachments
+      attachments: attachments,
+      threadId: rawEmail.thread_id || null,
+      lastMessageId: rawEmail.last_message_id || null
     });
   } catch (error) {
     console.error('Reply suggestion endpoint failed:', error);
@@ -2894,14 +2960,46 @@ AI Summary of Email: ${email.ai_summary || ''}`;
   }
 });
 
-// 9. Send email using SMTP transporter or Mock fallback
+// 9. Send email through Gmail (preferred) with SMTP/Mock fallback
 app.post('/api/emails/send', async (req, res) => {
-  const { to, subject, body, attachments } = req.body;
+  const { to, cc, bcc, subject, body, html, attachments, threadId, inReplyTo, references } = req.body;
   if (!to || !subject || !body) {
     return res.status(400).json({ error: 'Recipient (to), subject, and email body are required.' });
   }
 
-  // Append attachments if any are selected by the user
+  // Prefer Gmail so the message appears in the real Sent folder and thread.
+  try {
+    const capabilities = gmailMailbox.getCapabilities();
+    if (capabilities.canSend) {
+      const result = await gmailMailbox.sendEmail({
+        to,
+        cc,
+        bcc,
+        subject,
+        body,
+        html,
+        attachments: Array.isArray(attachments) ? attachments : [],
+        threadId: threadId || undefined,
+        inReplyTo: inReplyTo || undefined,
+        references: references || undefined,
+      });
+      console.log('[Gmail] Email sent successfully:', result.messageId);
+      return res.json(result);
+    }
+    console.warn('[Gmail] Token does not include gmail.send. Falling back to SMTP/mock.');
+  } catch (gmailErr) {
+    console.error('[Gmail] Send failed:', gmailErr.message);
+    const smtpConfigured = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+    if (!smtpConfigured) {
+      return res.status(500).json({
+        error: 'Failed to send email through Gmail',
+        details: gmailErr.message,
+        hint: 'Run node Backend/scripts/gmail-authorize.js to grant gmail.send, then restart the backend.'
+      });
+    }
+  }
+
+  // Append attachment links for the SMTP/mock fallback only.
   let finalBody = body;
   if (attachments && Array.isArray(attachments) && attachments.length > 0) {
     finalBody += '\n\n---\nAttached Files:\n' + attachments.map(att => `- ${att.name}: ${att.link}`).join('\n');
@@ -2918,7 +3016,7 @@ app.post('/api/emails/send', async (req, res) => {
       const transporter = nodemailer.createTransport({
         host: smtpHost,
         port: smtpPort,
-        secure: smtpPort === 465, // true for 465, false for other ports
+        secure: smtpPort === 465,
         auth: {
           user: smtpUser,
           pass: smtpPass
@@ -2928,6 +3026,8 @@ app.post('/api/emails/send', async (req, res) => {
       const info = await transporter.sendMail({
         from: `"${process.env.SMTP_FROM_NAME || 'Laser Power & Infra'}" <${smtpUser}>`,
         to,
+        cc: cc || undefined,
+        bcc: bcc || undefined,
         subject,
         text: finalBody
       });
@@ -2939,7 +3039,6 @@ app.post('/api/emails/send', async (req, res) => {
       res.status(500).json({ error: 'Failed to send email via SMTP', details: err.message });
     }
   } else {
-    // Mock Mode
     console.log('\n--- [MOCK EMAIL SENT] ---');
     console.log(`Date: ${new Date().toLocaleString()}`);
     console.log(`To: ${to}`);
@@ -2948,11 +3047,10 @@ app.post('/api/emails/send', async (req, res) => {
     console.log(finalBody);
     console.log('-------------------------\n');
 
-    // Return success in mock mode
-    res.json({ 
-      success: true, 
-      messageId: `mock_msg_${Math.random().toString(36).substring(2, 15)}`, 
-      mode: 'MOCK' 
+    res.json({
+      success: true,
+      messageId: `mock_msg_${Math.random().toString(36).substring(2, 15)}`,
+      mode: 'MOCK'
     });
   }
 });
@@ -3471,7 +3569,7 @@ app.get('/api/all-emails', async (req, res) => {
     let query = `SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender,
                         DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date_received,
                         DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date,
-                        t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority, t.is_important, t.user_labels, t.attach_names, t.attach_links, 
+                        t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority, t.is_important, t.user_labels, t.attach_names, t.attach_links, t.is_unread, t.unread_count, t.is_starred, t.last_message_id,
                         LEFT(t.${colBody}, 3000) as body,
                         LEFT(t.${colBody}, 300) as body_preview 
                  FROM \`${table}\` t`;
@@ -3719,7 +3817,7 @@ app.get('/api/export-emails', async (req, res) => {
     let query = `SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender,
                         DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date_received,
                         DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date,
-                        t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority, t.is_important, t.user_labels, t.attach_names, t.attach_links, 
+                        t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority, t.is_important, t.user_labels, t.attach_names, t.attach_links, t.is_unread, t.unread_count, t.is_starred, t.last_message_id,
                         LEFT(t.${colBody}, 3000) as body,
                         LEFT(t.${colBody}, 300) as body_preview 
                  FROM \`${table}\` t`;
@@ -3853,7 +3951,8 @@ app.get('/api/emails/:id', async (req, res) => {
 
     const [rows] = await conn.execute(`
       SELECT ${colId} as id, thread_id, ${colSubject} as subject, ${colBody} as body, ${colSender} as sender, ${colDate} as date,
-             cc_details, to_details, company, category, sub_category, priority, is_important, user_labels, attach_names, attach_links, ocr_text, ai_summary
+             cc_details, to_details, company, category, sub_category, priority, is_important, user_labels, attach_names, attach_links, ocr_text, ai_summary,
+             is_unread, unread_count, is_starred, last_message_id
       FROM \`${table}\`
       WHERE ${colId} = ?
     `, [req.params.id]);
@@ -4975,6 +5074,221 @@ app.get('/api/sender-companies', async (req, res) => {
     res.status(500).json({ error: err.message });
   } finally {
     if (conn) releaseDbConnection(conn);
+  }
+});
+
+// ----------------------------------------------------
+// Gmail Mailbox API (live Gmail read/write)
+// ----------------------------------------------------
+function handleMailboxError(res, err, fallbackMessage) {
+  const message = err && err.message ? err.message : String(err);
+  const isQuota = (err && err.code === 'GMAIL_QUOTA') || /quota|rate limit|rateLimitExceeded|429/i.test(message);
+  const needsAuth = !isQuota && /insufficient|scope|permission|invalid_grant|unauthorized|401|403/i.test(message);
+  console.error(`[Mailbox] ${fallbackMessage}:`, message);
+
+  if (isQuota) {
+    const retryAfter = Number(err && err.retryAfter) || Number(process.env.GMAIL_QUOTA_RETRY_SECONDS) || 60;
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({
+      error: 'GMAIL_QUOTA',
+      message: `Gmail rate limit reached. Please retry in ${retryAfter} seconds.`,
+      details: message,
+      retryAfter,
+      isQuota: true
+    });
+  }
+
+  res.status(needsAuth ? 403 : 500).json({
+    error: fallbackMessage,
+    details: message,
+    needsAuth,
+    hint: needsAuth
+      ? 'Run node Backend/scripts/gmail-authorize.js to grant gmail.modify and gmail.send, then restart the backend.'
+      : undefined
+  });
+}
+
+app.get('/api/mailbox/profile', async (req, res) => {
+  try {
+    const profile = await gmailMailbox.getProfile({ force: req.query.refresh === '1' });
+    res.json({ success: true, ...profile });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not load Gmail profile');
+  }
+});
+
+app.get('/api/mailbox/counts', async (req, res) => {
+  try {
+    const counts = await gmailMailbox.getCounts({ force: req.query.refresh === '1' });
+    const capabilities = gmailMailbox.getCapabilities();
+    res.json({ success: true, counts, capabilities });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not load mailbox counts');
+  }
+});
+
+app.get('/api/mailbox/threads', async (req, res) => {
+  try {
+    const defaultLimit = Number(process.env.MAILBOX_PAGE_SIZE) || 10;
+    const { folder = 'inbox', q = '', pageToken = '', limit = defaultLimit } = req.query;
+    const result = await gmailMailbox.listThreads({
+      folder: String(folder),
+      q: String(q || ''),
+      pageToken: pageToken ? String(pageToken) : undefined,
+      limit: Math.min(Number(limit) || defaultLimit, 25),
+      force: req.query.refresh === '1',
+    });
+    res.json({ success: true, folder, ...result });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not load mailbox threads');
+  }
+});
+
+app.get('/api/mailbox/threads/:threadId', async (req, res) => {
+  try {
+    const thread = await gmailMailbox.getThreadDetail(req.params.threadId, {
+      force: req.query.refresh === '1',
+    });
+    res.json({ success: true, thread });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not load email thread');
+  }
+});
+
+app.get('/api/mailbox/attachments/:messageId/:attachmentId', async (req, res) => {
+  try {
+    const buffer = await gmailMailbox.downloadAttachment(req.params.messageId, req.params.attachmentId);
+    const mime = String(req.query.mime || 'application/octet-stream');
+    const safeMime = /^[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+$/.test(mime)
+      ? mime
+      : 'application/octet-stream';
+    const filename = String(req.query.filename || 'attachment').replace(/[\r\n"]/g, '_');
+    const inline = String(req.query.inline || '') === '1';
+    res.setHeader('Content-Type', safeMime);
+    res.setHeader('Content-Length', buffer.length);
+    res.setHeader(
+      'Content-Disposition',
+      `${inline ? 'inline' : 'attachment'}; filename="${filename}"`
+    );
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(buffer);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not download attachment');
+  }
+});
+
+app.post('/api/mailbox/send', async (req, res) => {
+  try {
+    const result = await gmailMailbox.sendEmail(req.body || {});
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not send email');
+  }
+});
+
+app.post('/api/mailbox/threads/:threadId/reply', async (req, res) => {
+  try {
+    const result = await gmailMailbox.replyToThread(req.params.threadId, req.body || {});
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not send reply');
+  }
+});
+
+app.post('/api/mailbox/threads/:threadId/forward', async (req, res) => {
+  try {
+    const result = await gmailMailbox.forwardThread(req.params.threadId, req.body || {});
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not forward email');
+  }
+});
+
+app.post('/api/mailbox/threads/:threadId/modify', async (req, res) => {
+  try {
+    const action = String((req.body && req.body.action) || '');
+    if (!action) return res.status(400).json({ error: 'action is required' });
+    const state = await gmailMailbox.modifyThread(req.params.threadId, action);
+    await updateThreadReadState(state.threadId, state);
+    res.json({ success: true, ...state });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not update email');
+  }
+});
+
+app.post('/api/mailbox/reconcile-read', async (req, res) => {
+  try {
+    const threadIds = (Array.isArray(req.body && req.body.threadIds) ? req.body.threadIds : []).slice(0, 20);
+    if (threadIds.length === 0) return res.json({ success: true, states: [] });
+    const states = await gmailMailbox.reconcileThreadStates(threadIds);
+    for (const state of states) {
+      await updateThreadReadState(state.threadId, state);
+    }
+    res.json({ success: true, states });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not reconcile read state');
+  }
+});
+
+app.get('/api/mailbox/drafts', async (req, res) => {
+  try {
+    const defaultLimit = Number(process.env.MAILBOX_PAGE_SIZE) || 10;
+    const { pageToken = '', limit = defaultLimit } = req.query;
+    const result = await gmailMailbox.listThreads({
+      folder: 'drafts',
+      pageToken: pageToken ? String(pageToken) : undefined,
+      limit: Math.min(Number(limit) || defaultLimit, 25),
+      force: req.query.refresh === '1',
+    });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not load drafts');
+  }
+});
+
+app.post('/api/mailbox/drafts', async (req, res) => {
+  try {
+    const result = await gmailMailbox.saveDraft(req.body || {});
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not save draft');
+  }
+});
+
+app.post('/api/mailbox/drafts/:draftId/send', async (req, res) => {
+  try {
+    const result = await gmailMailbox.sendDraft(req.params.draftId);
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not send draft');
+  }
+});
+
+app.delete('/api/mailbox/drafts/:draftId', async (req, res) => {
+  try {
+    const result = await gmailMailbox.deleteDraft(req.params.draftId);
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not delete draft');
+  }
+});
+
+// Read/unread toggle from the existing Tender / All Emails screens
+app.post('/api/emails/:id/read', async (req, res) => {
+  try {
+    const read = Boolean(req.body && req.body.read);
+    const threadId = await getThreadIdForDbId(req.params.id);
+    if (!threadId) return res.status(404).json({ error: 'Email thread not found' });
+    const state = await gmailMailbox.modifyThread(threadId, read ? 'read' : 'unread');
+    await updateThreadReadState(threadId, state);
+    res.json({
+      success: true,
+      is_unread: state.isUnread ? 1 : 0,
+      unread_count: state.unreadCount,
+      is_starred: state.isStarred ? 1 : 0,
+    });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not update read state');
   }
 });
 
