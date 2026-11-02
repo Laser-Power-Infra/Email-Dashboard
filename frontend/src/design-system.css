@@ -253,10 +253,13 @@ h1, h2, h3, h4, h5, h6 {
 
 .btn-dark,
 .btn-pink {
-  width: 26px !important;
+  width: auto !important;
   height: 26px !important;
   min-height: 26px !important;
-  padding: 0 !important;
+  padding: 0 8px !important;
+  gap: 4px;
+  font-size: var(--font-small) !important;
+  font-weight: 600 !important;
   border-radius: 4px !important;
   background: var(--bg-card) !important;
   color: var(--text-muted) !important;
@@ -658,4 +661,31 @@ body.theme-light .email-modal-footer-light {
   --color-primary-light: #3b82f6;
   background: #ffffff !important;
   border-color: #cbd5e1 !important;
+}
+
+/* AI engine (Ollama) offline banner */
+.ai-engine-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-warning);
+  border-left-width: 4px;
+  border-radius: 4px;
+  background: rgba(217, 119, 6, 0.10);
+  color: var(--text-main);
+  font-size: var(--font-small, 0.8rem);
+}
+
+.ai-engine-banner > svg {
+  color: var(--color-warning);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.ai-engine-banner-detail {
+  color: var(--text-muted);
+  margin-top: 2px;
+  word-break: break-word;
 }

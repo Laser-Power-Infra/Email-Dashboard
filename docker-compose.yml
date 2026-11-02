@@ -43,6 +43,11 @@ services:
       - GOOGLE_SHEET_GID=1274623128
       - SYNC_INTERVAL_MS=14400000
       - OLLAMA_HOST=http://host.docker.internal:11434
+      # Ollama must listen on 0.0.0.0 on the host (OLLAMA_HOST=0.0.0.0 in the ollama service), not only 127.0.0.1,
+      # otherwise this container cannot reach it through host.docker.internal.
+      - OLLAMA_MODEL=gemma4:e4b
+      # Optional: POST a JSON alert here when the AI engine goes down / recovers (Slack/Teams/n8n webhook).
+      # - AI_ALERT_WEBHOOK_URL=https://example.invalid/webhook
       - MAILBOX_CREDENTIALS_PATH=/app/mailbox_config/credentials.json
       - MAILBOX_TOKEN_PATH=/app/mailbox_config/token.json
       - MAILBOX_PAGE_SIZE=10

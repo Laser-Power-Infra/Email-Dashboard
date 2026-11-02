@@ -43,6 +43,7 @@ import {
 import Mailbox from './Mailbox';
 import EmailHtmlViewer from './EmailHtmlViewer';
 import EmailComposer from './EmailComposer';
+import { formatSheetDate, pluralize, getTenderTitle, getTenderNumber } from './tenderFormat';
 
 function parseEmailThread(body, defaultSender = 'Sender') {
   if (!body || !body.trim()) return [];
@@ -1961,7 +1962,7 @@ function App() {
     }
     
     const confirmSend = window.confirm(
-      `Are you sure you want to automatically generate and send an AI reply to the recipient for Tender: ${tender.tenderFor || 'Tender'}?`
+      `Are you sure you want to automatically generate and send an AI reply to the recipient for Tender: ${getTenderTitle(tender)}?`
     );
     if (!confirmSend) return;
 
@@ -2176,6 +2177,35 @@ function App() {
     fetchRecentMatches();
     fetchMatchingRules();
   }, []);
+
+  // Poll AI engine (Ollama) health every 60s so the offline banner appears/clears on its own
+  useEffect(() => {
+    const pollAiHealth = async () => {
+      try {
+        const res = await fetch('/api/ai/health');
+        if (res.status !== 200 && res.status !== 503) return;
+        const aiEngine = await res.json();
+        setStatus(prev => ({
+          ...prev,
+          aiEngine,
+          openaiKey: aiEngine.activeProvider === 'ollama' ? aiEngine.status === 'ok' : prev.openaiKey
+        }));
+      } catch {
+        // backend unreachable: leave the last known status
+      }
+    };
+    const interval = setInterval(pollAiHealth, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const recheckAiEngine = async () => {
+    try {
+      await fetch('/api/ai/health/check', { method: 'POST' });
+    } catch {
+      // ignore, fetchStatus below shows the result
+    }
+    fetchStatus();
+  };
 
   // Poll for background match updates and sync status every 30 seconds
   useEffect(() => {
@@ -3044,20 +3074,24 @@ function App() {
             </div>
             <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
               <button
-                className={`btn btn-dark ${theme === 'dark' ? 'active' : ''}`}
+                className={`btn btn-dark theme-toggle-btn ${theme === 'dark' ? 'active' : ''}`}
                 onClick={() => applyTheme('dark')}
-                title="Dark theme"
+                title="Switch to dark theme"
+                aria-label="Switch to dark theme"
+                aria-pressed={theme === 'dark'}
                 type="button"
               >
-                <Moon size={14} />
+                <Moon size={14} /> <span>Dark</span>
               </button>
               <button
-                className={`btn btn-pink ${theme === 'light' ? 'active' : ''}`}
+                className={`btn btn-pink theme-toggle-btn ${theme === 'light' ? 'active' : ''}`}
                 onClick={() => applyTheme('light')}
-                title="Light theme"
+                title="Switch to light theme"
+                aria-label="Switch to light theme"
+                aria-pressed={theme === 'light'}
                 type="button"
               >
-                <Sun size={14} />
+                <Sun size={14} /> <span>Light</span>
               </button>
 
               {status.sheetId && (
@@ -3095,6 +3129,29 @@ function App() {
             )}
           </div>
         </header>
+
+        {status.aiEngine && status.aiEngine.status && status.aiEngine.status !== 'ok' && status.aiEngine.status !== 'unknown' && (
+          <div className="ai-engine-banner" role="alert">
+            <AlertCircle size={16} />
+            <div style={{ flex: 1 }}>
+              <strong>
+                AI Engine (Ollama) {status.aiEngine.status === 'degraded' ? 'model missing' : 'offline'}
+                {status.aiEngine.ollamaRole === 'primary' ? ' — matching summaries are using the regex/rule-based fallback.' : ' — fallback AI provider unavailable.'}
+              </strong>
+              <div className="ai-engine-banner-detail">
+                {status.aiEngine.error || 'Health check failed.'}
+                {status.aiEngine.downSince ? ` Since ${formatDateTime(status.aiEngine.downSince)}.` : ''}
+                {status.aiEngine.nextCheckInMs ? ` Retrying automatically every ${Math.round(status.aiEngine.nextCheckInMs / 1000)}s.` : ''}
+              </div>
+              {Array.isArray(status.aiEngine.configWarnings) && status.aiEngine.configWarnings.length > 0 && (
+                <div className="ai-engine-banner-detail">Config: {status.aiEngine.configWarnings.join(' ')}</div>
+              )}
+            </div>
+            <button type="button" className="btn btn-secondary btn-small" onClick={recheckAiEngine}>
+              <RefreshCw size={12} /> Re-check
+            </button>
+          </div>
+        )}
 
         {activeTab === 'mailbox' && (
           <div style={{ marginTop: '1rem' }}>
@@ -3465,7 +3522,7 @@ function App() {
 
                 {loading && tenders.length === 0 ? (
                   <div className="loading-container"><div className="spinner"></div></div>
-                ) : dashboardFilteredTenders.filter(t => t.isParticipated || t.matchCount > 0).length === 0 ? (
+                ) : dashboardFilteredTenders.filter(t => t.matchCount > 0).length === 0 ? (
                   <div className="empty-state">
                     <Info size={40} />
                     <h3>No Matched or Participated Tenders</h3>
@@ -3474,7 +3531,7 @@ function App() {
                 ) : (
                   <div className="tenders-list" style={{ opacity: loading ? 0.75 : 1, transition: 'opacity 0.2s' }}>
                     {dashboardFilteredTenders
-                      .filter(t => t.isParticipated || t.matchCount > 0)
+                      .filter(t => t.matchCount > 0)
                       .sort((a, b) => {
                         const da = parseGSheetDate(a.lastDate) || parseGSheetDate(a.docketNo) || (a.latestEmailDate ? new Date(a.latestEmailDate) : null);
                         const db = parseGSheetDate(b.lastDate) || parseGSheetDate(b.docketNo) || (b.latestEmailDate ? new Date(b.latestEmailDate) : null);
@@ -3491,19 +3548,19 @@ function App() {
                         >
                           <div className="tender-header">
                             <div>
-                              <div className="tender-title">{t.tenderFor || 'Tender Item'}</div>
+                              <div className="tender-title" title={t.nameOfWork || t.tenderNoRaw || ''}>{getTenderTitle(t)}</div>
                               <div className="tender-client">{t.client || 'Unknown Client'}</div>
                             </div>
-                            <span className="badge badge-success">{t.matchCount} emails</span>
+                            <span className="badge badge-success">{pluralize(t.matchCount, 'email')}</span>
                           </div>
 
                           <div className="tender-details">
-                            <div className="detail-item">
-                              <span style={{ fontWeight: 600 }}>Tender No:</span> {t.tenderNoRaw.substring(0, 60)}...
+                            <div className="detail-item" title={t.tenderNoRaw || ''}>
+                              <span style={{ fontWeight: 600 }}>Tender No:</span> {getTenderNumber(t) || '—'}
                             </div>
                             <div className="detail-item">
                               <Calendar size={12} />
-                              <span>Last Date: {t.lastDate || 'N/A'}</span>
+                              <span>Last Date: {formatSheetDate(t.lastDate)}</span>
                             </div>
                           </div>
                         </div>
@@ -3557,7 +3614,9 @@ function App() {
                         <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                           {status.openaiKey 
                             ? `${status.aiProvider ? (status.aiProvider.charAt(0).toUpperCase() + status.aiProvider.slice(1)) : 'AI'} active (${status.aiModel || ''})` 
-                            : 'AI offline, using regex fallback'}
+                            : (status.aiEngine && status.aiEngine.error
+                                ? `Offline, using regex fallback: ${status.aiEngine.error}`
+                                : 'AI offline, using regex fallback')}
                         </div>
                       </div>
                     </div>
@@ -3683,7 +3742,7 @@ function App() {
                       <tr key={`${t.rowNumber ?? 'r'}-${idx}`}>
                         <td style={{ fontWeight: 600 }}>{t.docketNo || 'N/A'}</td>
                         <td>
-                          <div style={{ fontWeight: 600, color: 'var(--text-main)' }}>{t.tenderFor || 'Tender Item'}</div>
+                          <div style={{ fontWeight: 600, color: 'var(--text-main)' }}>{getTenderTitle(t)}</div>
                           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {t.tenderNoRaw}
                           </div>
@@ -3694,7 +3753,7 @@ function App() {
                             {t.participated || 'NO'}
                           </span>
                         </td> */}
-                        <td>{t.lastDate || 'N/A'}</td>
+                        <td>{formatSheetDate(t.lastDate)}</td>
                         {/* <td>
                           <span className={`badge ${
                             t.status?.toLowerCase().includes('awarded') ? 'badge-success' :
@@ -3903,10 +3962,18 @@ function App() {
                   <div className="config-value-wrapper">
                     <div className={`config-status-dot ${status.openaiKey ? 'success' : 'warn'}`}></div>
                     <div>
-                      <div style={{ fontWeight: 600 }}>{status.openaiKey ? 'Configured & Active' : 'Not Configured'}</div>
+                      <div style={{ fontWeight: 600 }}>{status.openaiKey ? 'Configured & Active' : (status.aiEngine && status.aiEngine.status === 'down' ? 'Offline' : 'Not Available')}</div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                         {status.openaiKey ? `Active Model: ${status.aiModel || ''}` : 'Regex Fallback Active'}
                       </div>
+                      {status.aiEngine && (
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                          Ollama: {status.aiEngine.url || 'not configured'} · model {status.aiEngine.model || '?'} · {status.aiEngine.status}
+                          {status.aiEngine.lastCheckedAt ? ` · checked ${formatDateTime(status.aiEngine.lastCheckedAt)}` : ''}
+                          {status.aiEngine.error ? <div>{status.aiEngine.error}</div> : null}
+                          {(status.aiEngine.configWarnings || []).map((w, i) => <div key={i}>⚠ {w}</div>)}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -4611,7 +4678,7 @@ function App() {
                     {filteredEmails.map(email => {
                       const parentTender = tenderMap.get(`${email.docket_no}|${email.tender_no}`);
                       const tenderLabel = parentTender 
-                        ? `${parentTender.client} - ${parentTender.tenderFor || 'Tender'}`
+                        ? `${parentTender.client} - ${getTenderTitle(parentTender)}`
                         : `Ref: ${email.docket_no || 'Manual/Participated'} | Tender ID: ${email.tender_no || 'N/A'}`;
 
                       return (
@@ -5751,7 +5818,7 @@ function App() {
           <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '900px' }}>
             <div className="modal-header">
               <div>
-                <h2>{selectedTender.tenderFor || 'Tender Item'}</h2>
+                <h2>{getTenderTitle(selectedTender)}</h2>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Date: {selectedTender.docketNo || 'N/A'} | Client: {selectedTender.client}</div>
               </div>
               <button className="modal-close" onClick={() => setSelectedTender(null)}>âœ•</button>
@@ -5761,9 +5828,9 @@ function App() {
               {/* Tender Details Info Grid */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', padding: '1rem', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '4px', border: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
                 <div><strong>Tender No Raw:</strong> <span style={{ color: 'var(--color-secondary)' }}>{selectedTender.tenderNoRaw}</span></div>
-                <div><strong>Submission Deadline:</strong> {selectedTender.lastDate || 'N/A'}</div>
+                <div><strong>Submission Deadline:</strong> {formatSheetDate(selectedTender.lastDate)}</div>
                 <div><strong>Extracted Deadline:</strong> <span style={{ color: selectedTender.deadlineDate && !isSentinelDate(selectedTender.deadlineDate) && isDeadlinePastOrToday(selectedTender.deadlineDate) ? 'var(--color-danger)' : 'inherit' }}>{selectedTender.deadlineDate && !isSentinelDate(selectedTender.deadlineDate) ? formatDateTime(selectedTender.deadlineDate) : 'N/A'}</span></div>
-                <div><strong>Opening Date:</strong> {selectedTender.openingDate || 'N/A'}</div>
+                <div><strong>Opening Date:</strong> {formatSheetDate(selectedTender.openingDate)}</div>
                 <div><strong>Estimated Cost:</strong> {selectedTender.estimatedCost || 'N/A'}</div>
                 <div><strong>EMD Amount:</strong> {selectedTender.emd || 'N/A'}</div>
                 <div><strong>Current Status:</strong> <span className="badge badge-info">{selectedTender.status || 'Active'}</span></div>
@@ -6504,7 +6571,7 @@ function App() {
               <div>
                 <h2 style={{ fontSize: '1.25rem' }}>AI Reply Drafting & Automated Sending</h2>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                  Tender: {replyTender.tenderFor || 'Tender Item'} (Docket: {replyTender.docketNo})
+                  Tender: {getTenderTitle(replyTender)} (Docket: {replyTender.docketNo})
                 </div>
               </div>
               <button className="modal-close" onClick={() => setReplyTender(null)}>âœ•</button>
