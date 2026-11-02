@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 1. Frontend Web Portal (Vite React + Nginx on Port 6002)
   frontend:
@@ -27,6 +25,8 @@ services:
       dockerfile: Dockerfile
     container_name: match_emails_backend
     restart: always
+    depends_on:
+      - ollama
     ports:
       - "6003:6003"
     environment:
@@ -42,10 +42,11 @@ services:
       - GOOGLE_SPREADSHEET_ID=1GTwzxMgViohbCimXqfiBZBJsKbCSr7hCgbcHF_En1VE
       - GOOGLE_SHEET_GID=1274623128
       - SYNC_INTERVAL_MS=14400000
-      - OLLAMA_HOST=http://host.docker.internal:11434
-      # Ollama must listen on 0.0.0.0 on the host (OLLAMA_HOST=0.0.0.0 in the ollama service), not only 127.0.0.1,
-      # otherwise this container cannot reach it through host.docker.internal.
+      # Ollama runs as the "ollama" service in this compose stack (see below); no host install needed.
+      - OLLAMA_HOST=http://ollama:11434
       - OLLAMA_MODEL=gemma4:e4b
+      # CPU-only inference is slow: allow up to 3 minutes per completion before giving up.
+      - OLLAMA_REQUEST_TIMEOUT_MS=180000
       # Optional: POST a JSON alert here when the AI engine goes down / recovers (Slack/Teams/n8n webhook).
       # - AI_ALERT_WEBHOOK_URL=https://example.invalid/webhook
       - MAILBOX_CREDENTIALS_PATH=/app/mailbox_config/credentials.json
@@ -86,7 +87,7 @@ services:
     mem_limit: 3g
     mem_reservation: 512m
     environment:
-      - OLLAMA_HOST=http://host.docker.internal:11434
+      - OLLAMA_HOST=http://ollama:11434
       - OMP_THREAD_LIMIT=1
     volumes:
       - ./Emails_agent:/app
@@ -104,6 +105,62 @@ services:
       options:
         max-size: "20m"
         max-file: "3"
+
+  # 4. Local AI engine (Ollama) used by the backend for matching summaries.
+  #    First start pulls OLLAMA_MODEL automatically (several GB, needs internet); later starts reuse the volume.
+  #    Port 11434 is published so local dev (Backend/.env -> http://localhost:11434) and other tools can use it too.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: match_emails_ollama
+    restart: always
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_MODEL=gemma4:e4b
+      - OLLAMA_KEEP_ALIVE=30m
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
+    volumes:
+      - ollama_models:/root/.ollama
+    # Guardrails: keep CPU-only inference from starving the other containers / WSL.
+    cpus: 8
+    mem_limit: 11g
+    mem_reservation: 2g
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /bin/ollama serve &
+        PID=$$!
+        i=0
+        while [ $$i -lt 60 ] && ! /bin/ollama list >/dev/null 2>&1; do i=$$((i+1)); sleep 1; done
+        if /bin/ollama list 2>/dev/null | awk 'NR>1{print $$1}' | grep -qx "$$OLLAMA_MODEL"; then
+          echo "[ollama-init] model $$OLLAMA_MODEL already present"
+        else
+          echo "[ollama-init] pulling $$OLLAMA_MODEL ..."
+          until /bin/ollama pull "$$OLLAMA_MODEL"; do echo "[ollama-init] pull failed, retrying in 30s"; sleep 30; done
+          echo "[ollama-init] pull complete"
+        fi
+        wait $$PID
+    healthcheck:
+      test: ["CMD", "/bin/ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - match_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  ollama_models:
 
 networks:
   match_net:
