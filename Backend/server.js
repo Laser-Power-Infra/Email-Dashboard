@@ -42,6 +42,9 @@ for (const envP of envPaths) {
 const { extractTenderTokens, checkMatch, checkMatchNormalized, checkMatchCompiled, makeTokenRegex } = require('./matcher');
 const { shouldUseFullSync } = require('./syncStrategy');
 const { syncDocketQuotationMails } = require('./docketQuotationSync');
+const gmailMailbox = require('./gmailMailbox');
+const { AiHealthMonitor, resolveOllamaConfig, isConnectionError } = require('./aiHealth');
+const { prepareTendersForMatching, findBestTenderForThread } = require('./tenderMatchSelector');
 
 const COMPANY_CANON = {
   laser: 'Laser', gmd: 'GMD', uic: 'UIC', ceebuild: 'CEEBUILD',
@@ -334,14 +337,102 @@ function releaseDbConnection(conn) {
   } catch (e) {}
 }
 
+async function getThreadIdForDbId(dbId) {
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const table = process.env.DB_TABLE || 'threads';
+    const colId = process.env.DB_COL_ID || 'id';
+    const [rows] = await conn.execute(
+      `SELECT thread_id FROM \`${table}\` WHERE ${colId} = ? LIMIT 1`,
+      [dbId]
+    );
+    return rows.length > 0 ? rows[0].thread_id : null;
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
+}
+
+async function updateThreadReadState(threadId, state) {
+  if (!threadId || !state) return;
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const table = process.env.DB_TABLE || 'threads';
+    const unreadCount = Number(state.unreadCount) || 0;
+    if (state.lastMessageId) {
+      await conn.execute(
+        `UPDATE \`${table}\`
+         SET is_unread = ?, unread_count = ?, is_starred = ?, last_message_id = ?
+         WHERE thread_id = ?`,
+        [unreadCount > 0 ? 1 : 0, unreadCount, state.isStarred ? 1 : 0, state.lastMessageId, threadId]
+      );
+    } else {
+      await conn.execute(
+        `UPDATE \`${table}\`
+         SET is_unread = ?, unread_count = ?, is_starred = ?
+         WHERE thread_id = ?`,
+        [unreadCount > 0 ? 1 : 0, unreadCount, state.isStarred ? 1 : 0, threadId]
+      );
+    }
+  } catch (err) {
+    console.warn('[Mailbox] Could not update local read state:', err.message);
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
+}
+
+// Single source of truth for the Ollama endpoint (OLLAMA_BASE_URL > OLLAMA_HOST > docker/localhost default).
 function getOllamaBaseUrl() {
-  if (process.env.OLLAMA_BASE_URL) {
-    return process.env.OLLAMA_BASE_URL;
+  return resolveOllamaConfig(process.env).baseURL;
+}
+
+function getOllamaModel() {
+  return resolveOllamaConfig(process.env).model;
+}
+
+// Ollama runs locally/on the LAN: fail fast instead of the OpenAI SDK default (10 min timeout, 2 retries),
+// so a dead engine drops to the rule-based fallback quickly.
+function createOllamaClient() {
+  return new OpenAI({
+    baseURL: getOllamaBaseUrl(),
+    apiKey: 'ollama', // Placeholder apiKey required by OpenAI SDK client
+    timeout: Number(process.env.OLLAMA_REQUEST_TIMEOUT_MS) || 60000,
+    maxRetries: 0
+  });
+}
+
+// AI engine health monitor: periodic probe + backoff retries + alerts (log, hooks, optional AI_ALERT_WEBHOOK_URL)
+const aiHealthMonitor = new AiHealthMonitor();
+const aiEngineAlerts = []; // last few alerts, surfaced on the dashboard
+aiHealthMonitor.onAlert(({ type, message }) => {
+  aiEngineAlerts.unshift({ type, message, at: new Date().toISOString() });
+  aiEngineAlerts.length = Math.min(aiEngineAlerts.length, 10);
+  if (type === 'recovered') {
+    lastAiError = null; // reconnect: clear the stale error so the dashboard flips back to ACTIVE
   }
-  if (fs.existsSync('/.dockerenv')) {
-    return 'http://host.docker.internal:11434/v1';
-  }
-  return 'http://localhost:11434/v1';
+});
+
+/**
+ * Public hook so other integrations (email, Slack, n8n...) can subscribe to AI engine alerts:
+ * registerAiEngineAlertHook(({ type, state, message }) => ...). type is 'down' | 'degraded' | 'recovered'.
+ * For a no-code option set AI_ALERT_WEBHOOK_URL and the monitor POSTs the alert as JSON.
+ */
+function registerAiEngineAlertHook(fn) {
+  return aiHealthMonitor.onAlert(fn);
+}
+
+function getAiEngineStatus() {
+  const { provider } = getAiClient();
+  const state = aiHealthMonitor.getState();
+  return {
+    ...state,
+    activeProvider: provider,
+    // Ollama is primary when provider === 'ollama'; otherwise it is only the last-resort fallback.
+    ollamaRole: provider === 'ollama' ? 'primary' : 'fallback',
+    lastAiError,
+    recentAlerts: aiEngineAlerts.slice(0, 5)
+  };
 }
 
 // AI Client Resolver (supports Groq, local Ollama, and OpenAI)
@@ -382,14 +473,9 @@ function getAiClient() {
     };
   } else {
     // Default to ollama
-    const baseURL = getOllamaBaseUrl();
-    const model = process.env.OLLAMA_MODEL || 'gemma4:e4b';
     return {
-      client: new OpenAI({
-        baseURL,
-        apiKey: 'ollama' // Placeholder apiKey required by OpenAI SDK client
-      }),
-      model,
+      client: createOllamaClient(),
+      model: getOllamaModel(),
       provider
     };
   }
@@ -450,13 +536,10 @@ async function callChatCompletionsWithFallback(payload) {
 
     // Local Ollama
     chain.push({
-      client: new OpenAI({
-        baseURL: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
-        apiKey: 'ollama'
-      }),
-      model: process.env.OLLAMA_MODEL || 'gemma4:e4b',
+      client: createOllamaClient(),
+      model: getOllamaModel(),
       provider: 'ollama',
-      label: `ollama - ${process.env.OLLAMA_MODEL || 'gemma4:e4b'} (fallback)`
+      label: `ollama - ${getOllamaModel()} (fallback)`
     });
   } else if (provider === 'openai') {
     // If OpenAI is primary, also try Groq as fallback (free, no max_tokens issues)
@@ -482,19 +565,25 @@ async function callChatCompletionsWithFallback(payload) {
     }
     // Local Ollama as last resort
     chain.push({
-      client: new OpenAI({
-        baseURL: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
-        apiKey: 'ollama'
-      }),
-      model: process.env.OLLAMA_MODEL || 'gemma4:e4b',
+      client: createOllamaClient(),
+      model: getOllamaModel(),
       provider: 'ollama',
-      label: `ollama - ${process.env.OLLAMA_MODEL || 'gemma4:e4b'} (fallback)`
+      label: `ollama - ${getOllamaModel()} (fallback)`
     });
   }
 
   let lastErr = null;
   for (let i = 0; i < chain.length; i++) {
     const attempt = chain[i];
+    // Skip Ollama straight away while the health monitor knows it is down (it keeps retrying in the
+    // background with backoff and the next call goes through once the engine is reachable again).
+    if (attempt.provider === 'ollama' && aiHealthMonitor.getState().status === 'down') {
+      const downErr = new Error(`AI engine (Ollama) is offline: ${aiHealthMonitor.getState().error || 'unreachable'}`);
+      console.warn(`[AI Call Skipped] ${attempt.label}: ${downErr.message}`);
+      lastErr = downErr;
+      lastAiError = downErr.message;
+      continue;
+    }
     try {
       if (i > 0) {
         console.log(`[AI Fallback Chain] Swapping to fallback attempt ${i}: ${attempt.label}`);
@@ -516,7 +605,20 @@ async function callChatCompletionsWithFallback(payload) {
         basePayload.max_tokens = Math.min(basePayload.max_tokens, 150);
       }
 
-      const completion = await attempt.client.chat.completions.create(basePayload);
+      let completion;
+      try {
+        completion = await attempt.client.chat.completions.create(basePayload);
+      } catch (callErr) {
+        // Reconnect: if Ollama dropped the connection, re-probe it and retry once when it is back.
+        if (attempt.provider === 'ollama' && isConnectionError(callErr)) {
+          const health = await aiHealthMonitor.check();
+          if (health.status !== 'ok') throw callErr;
+          console.warn(`[AI Reconnect] Ollama connection error (${callErr.message}); engine is reachable again, retrying once.`);
+          completion = await attempt.client.chat.completions.create(basePayload);
+        } else {
+          throw callErr;
+        }
+      }
       lastAiError = null; // Clear error on successful execution
       return completion;
     } catch (err) {
@@ -760,6 +862,24 @@ async function initializeDatabase() {
     } catch (colErr) {
       if (colErr.code !== 'ER_DUP_FIELDNAME' && !colErr.message.includes('duplicate column')) {
         console.error('Failed to add codeword column:', colErr.message);
+      }
+    }
+
+    const mailboxColumns = [
+      ['is_unread', 'TINYINT(1) DEFAULT 0'],
+      ['unread_count', 'INT DEFAULT 0'],
+      ['is_starred', 'TINYINT(1) DEFAULT 0'],
+      ['last_message_id', 'VARCHAR(255) DEFAULT NULL'],
+    ];
+    for (const [columnName, columnType] of mailboxColumns) {
+      try {
+        const threadsTable = process.env.DB_TABLE || 'threads';
+        await conn.query(`ALTER TABLE \`${threadsTable}\` ADD COLUMN ${columnName} ${columnType}`);
+        console.log(`Added ${columnName} column to ${threadsTable} table.`);
+      } catch (colErr) {
+        if (colErr.code !== 'ER_DUP_FIELDNAME' && !colErr.message.includes('duplicate column')) {
+          console.error(`Failed to add ${columnName} column:`, colErr.message);
+        }
       }
     }
 
@@ -1658,13 +1778,19 @@ function classifyByKeywords(subject, body, sender) {
 app.get('/api/status', async (req, res) => {
   const { client, model, provider, error } = getAiClient();
 
+  const aiEngine = getAiEngineStatus();
+  // For Ollama the live health probe is the source of truth; cloud providers rely on the last call result.
+  const aiActive = provider === 'ollama'
+    ? (!error && !!client && aiEngine.status === 'ok')
+    : (!error && !!client && !lastAiError);
   const status = {
     sheetsAuth: false,
     database: false,
     dbFallbackActive: false,
-    openaiKey: !error && !!client && !lastAiError,
+    openaiKey: aiActive,
     aiProvider: provider,
     aiModel: model,
+    aiEngine,
     dbHost: process.env.DB_HOST || 'localhost',
     dbName: process.env.DB_NAME || 'defaultdb',
     dbTable: process.env.DB_TABLE || 'threads',
@@ -1676,6 +1802,9 @@ app.get('/api/status', async (req, res) => {
 
   if (lastAiError) {
     status.errors.openai = lastAiError;
+  }
+  if (aiEngine.status !== 'ok' && aiEngine.error) {
+    status.errors.aiEngine = aiEngine.error;
   }
 
   // Check sheets credentials
@@ -1871,56 +2000,89 @@ async function runSync(forceFullSyncRequested = false) {
       await new Promise(resolve => setImmediate(resolve));
     }
 
-    // Pre-compile token regexes for all tenders
-    console.log(`Pre-compiling token regexes for ${allTenders.length} tenders...`);
+    // Prepare tender tokens once (ID evidence only, with shared-token counts) for scoring
+    console.log(`Preparing tender ID tokens for ${allTenders.length} tenders...`);
     allTenders.forEach(tender => {
-      const tokens = extractTenderTokens(tender.tenderNoRaw);
-      tender.tokens = tokens;
-      tender.compiledRegexes = tokens.map(token => ({
-        token: token,
-        regex: makeTokenRegex(token)
-      }));
+      tender.tokens = extractTenderTokens(tender.tenderNoRaw);
     });
-    console.log(`Pre-compilation complete. Starting matching engine (non-blocking)...`);
+    const preparedTenders = prepareTendersForMatching(allTenders);
+    console.log(`Preparation complete. Starting matching engine (non-blocking, best single tender per email)...`);
 
     const table = process.env.DB_TABLE || 'threads';
     const colId = process.env.DB_COL_ID || 'id';
     const colBody = process.env.DB_COL_BODY || 'body';
 
     const matchesToInsert = [];
+    let ambiguousCount = 0;
 
-    // C. Matching loop (CPU intensive, non-blocking chunked execution)
-    for (let i = 0; i < allTenders.length; i++) {
-      const tender = allTenders[i];
-      if (!tender.docketNo) continue;
-      
-      const key = `${tender.docketNo}||${tender.tenderNoRaw}`;
-      const isNewTender = !cachedTendersMap[key];
+    // C. Matching loop (CPU intensive, non-blocking chunked execution).
+    // Each email is scored against every tender and linked to AT MOST ONE tender: the best-scoring
+    // candidate above MATCH_MIN_SCORE, backed by tender-number/ID evidence (see tenderMatchSelector.js).
+    for (let i = 0; i < normalizedThreads.length; i++) {
+      const thread = normalizedThreads[i];
 
-      for (const thread of normalizedThreads) {
-        // Skip matching any thread from blacklisted senders
-        const senderLower = (thread.sender || '').toLowerCase();
-        if (senderLower.includes('protulchatterjee2020@gmail.com') || senderLower.includes('biswajit@omclearing.com') || senderLower.includes('hr@laserpowerinfra.com')) {
-          continue;
-        }
-
-        const matchResult = checkMatchCompiled(tender.compiledRegexes, thread.normSubject, thread.normBody, thread.normOcr);
-        if (matchResult.matched) {
-          matchesToInsert.push({
-            docketNo: tender.docketNo,
-            tenderNo: tender.tenderNoRaw,
-            threadDbId: thread.id,
-            threadId: thread.thread_id,
-            matchedToken: matchResult.matchedToken,
-            confidence: matchResult.confidence,
-            thread: thread
-          });
-        }
+      // Skip matching any thread from blacklisted senders
+      const senderLower = (thread.sender || '').toLowerCase();
+      if (senderLower.includes('protulchatterjee2020@gmail.com') || senderLower.includes('biswajit@omclearing.com') || senderLower.includes('hr@laserpowerinfra.com')) {
+        continue;
       }
 
-      // Yield to the event loop every 5 tenders to allow HTTP requests to be handled
-      if (i % 5 === 0) {
+      const { best, candidates, reason } = findBestTenderForThread(preparedTenders, thread);
+      if (best) {
+        matchesToInsert.push({
+          docketNo: best.tender.docketNo,
+          tenderNo: best.tender.tenderNoRaw,
+          threadDbId: thread.id,
+          threadId: thread.thread_id,
+          matchedToken: best.matchedToken,
+          confidence: best.confidence,
+          thread: thread
+        });
+      } else if (candidates.length > 1) {
+        ambiguousCount++;
+        console.log(`[Matcher] Email ${thread.id} not linked (${candidates.length} candidate tenders): ${reason}`);
+      }
+
+      // Yield to the event loop every 20 emails to allow HTTP requests to be handled
+      if (i % 20 === 0) {
         await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+    if (ambiguousCount > 0) {
+      console.log(`[Matcher] ${ambiguousCount} emails had several weak/ambiguous tender candidates and were left unlinked.`);
+    }
+
+    // Keep the "one tender per email" invariant: never add a second tender to an email that is already
+    // linked. Historical multi-links are cleaned up with scripts/rematch-recent-emails.js.
+    if (matchesToInsert.length > 0) {
+      try {
+        const linkConn = await getDbConnection();
+        try {
+          const ids = [...new Set(matchesToInsert.map(m => m.threadDbId))];
+          const existingLinks = new Map();
+          for (let c = 0; c < ids.length; c += 500) {
+            const chunk = ids.slice(c, c + 500);
+            const [rows] = await linkConn.query(
+              `SELECT thread_db_id, docket_no, tender_no FROM tender_matches WHERE thread_db_id IN (?)`,
+              [chunk]
+            );
+            for (const r of rows) {
+              if (!existingLinks.has(r.thread_db_id)) existingLinks.set(r.thread_db_id, []);
+              existingLinks.get(r.thread_db_id).push(`${r.docket_no}||${r.tender_no}`);
+            }
+          }
+          for (let m = matchesToInsert.length - 1; m >= 0; m--) {
+            const match = matchesToInsert[m];
+            const links = existingLinks.get(match.threadDbId);
+            if (links && !links.includes(`${match.docketNo}||${match.tenderNo}`)) {
+              matchesToInsert.splice(m, 1);
+            }
+          }
+        } finally {
+          releaseDbConnection(linkConn);
+        }
+      } catch (linkErr) {
+        console.warn('[Matcher] Could not check existing tender links:', linkErr.message);
       }
     }
 
@@ -2400,7 +2562,7 @@ app.get('/api/tenders/:rowNumber/emails', async (req, res) => {
     let query = `
       SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colBody} as body,
              t.${colSender} as sender, t.${colDate} as date_received, t.ai_summary as summary, t.to_details, t.cc_details,
-             t.company, t.category, t.sub_category,
+             t.company, t.category, t.sub_category, t.is_unread, t.unread_count, t.is_starred, t.last_message_id,
              LEFT(t.ocr_text, 7000) as ocr_text, t.attach_names, t.attach_links,
              tm.matched_token, tm.matched_token as matchedToken, tm.confidence
       FROM \`${threadsTable}\` t
@@ -2506,6 +2668,24 @@ const { tenderStatusVal, replyDecision, deadline_date_val } = await buildMatched
   }
 });
 
+// Expose the AI-engine alert hook for other modules/integrations (e.g. email or Slack notifiers).
+app.locals.registerAiEngineAlertHook = registerAiEngineAlertHook;
+
+// AI engine (Ollama) health: GET returns the monitor state; ?refresh=1 (or POST .../check) probes immediately.
+app.get('/api/ai/health', async (req, res) => {
+  if (req.query.refresh === '1' || req.query.refresh === 'true') {
+    await aiHealthMonitor.check();
+  }
+  const aiEngine = getAiEngineStatus();
+  res.status(aiEngine.status === 'down' ? 503 : 200).json(aiEngine);
+});
+
+app.post('/api/ai/health/check', async (req, res) => {
+  await aiHealthMonitor.check();
+  const aiEngine = getAiEngineStatus();
+  res.status(aiEngine.status === 'down' ? 503 : 200).json(aiEngine);
+});
+
 // Health Check Endpoint: returns health status for Backend, Database, Email Agent script, Frontend, and system statistics
 app.get(['/api/health', '/api/health/route'], async (req, res) => {
   const startTime = Date.now();
@@ -2545,6 +2725,7 @@ app.get(['/api/health', '/api/health/route'], async (req, res) => {
       totalThreadsInBatch: 0,
       statusMessage: 'Not checked'
     },
+    aiEngine: getAiEngineStatus(),
     statistics: {
       totalThreads: 0,
       totalTenderMatches: 0,
@@ -2668,7 +2849,7 @@ app.get('/api/recent-matches', async (req, res) => {
 
     let query = `
       SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender, t.${colDate} as date_received, t.ai_summary as summary, t.to_details, t.cc_details,
-             t.company, t.category, t.sub_category,
+             t.company, t.category, t.sub_category, t.is_unread, t.unread_count, t.is_starred, t.last_message_id,
              LEFT(t.ocr_text, 3000) as ocr_text, tm.docket_no, tm.tender_no, tm.matched_token, tm.matched_token as matchedToken, tm.confidence
       FROM \`${threadsTable}\` t
       JOIN tender_matches tm ON t.${colId} = tm.thread_db_id
@@ -2728,7 +2909,7 @@ app.get('/api/matched-emails', async (req, res) => {
     let query = `
       SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender,
              DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date_received,
-             t.ai_summary as summary, t.company, t.to_details,
+             t.ai_summary as summary, t.company, t.to_details, t.is_unread, t.unread_count, t.is_starred, t.last_message_id,
              LEFT(t.ocr_text, 3000) as ocr_text, t.${colBody} as body, t.attach_names, t.attach_links,
              tm.docket_no, tm.tender_no, tm.matched_token, tm.matched_token as matchedToken, tm.confidence
       FROM \`${threadsTable}\` t
@@ -2824,7 +3005,7 @@ app.get('/api/emails/:id/reply-suggestion', async (req, res) => {
 
     // Retrieve email body, subject, sender, ocr_text, attach_names, attach_links
     const [rows] = await conn.execute(`
-      SELECT ${colSubject} as subject, ${colBody} as body, ${colSender} as sender, ocr_text, attach_names, attach_links, ai_summary
+      SELECT ${colSubject} as subject, ${colBody} as body, ${colSender} as sender, ocr_text, attach_names, attach_links, ai_summary, thread_id, last_message_id
       FROM \`${threadsTable}\` 
       WHERE ${colId} = ?
     `, [emailId]);
@@ -2882,7 +3063,9 @@ AI Summary of Email: ${email.ai_summary || ''}`;
       to: email.sender,
       subject: email.subject.toLowerCase().startsWith('re:') ? email.subject : `Re: ${email.subject}`,
       suggestedReply: suggestion,
-      attachments: attachments
+      attachments: attachments,
+      threadId: rawEmail.thread_id || null,
+      lastMessageId: rawEmail.last_message_id || null
     });
   } catch (error) {
     console.error('Reply suggestion endpoint failed:', error);
@@ -2894,14 +3077,46 @@ AI Summary of Email: ${email.ai_summary || ''}`;
   }
 });
 
-// 9. Send email using SMTP transporter or Mock fallback
+// 9. Send email through Gmail (preferred) with SMTP/Mock fallback
 app.post('/api/emails/send', async (req, res) => {
-  const { to, subject, body, attachments } = req.body;
+  const { to, cc, bcc, subject, body, html, attachments, threadId, inReplyTo, references } = req.body;
   if (!to || !subject || !body) {
     return res.status(400).json({ error: 'Recipient (to), subject, and email body are required.' });
   }
 
-  // Append attachments if any are selected by the user
+  // Prefer Gmail so the message appears in the real Sent folder and thread.
+  try {
+    const capabilities = gmailMailbox.getCapabilities();
+    if (capabilities.canSend) {
+      const result = await gmailMailbox.sendEmail({
+        to,
+        cc,
+        bcc,
+        subject,
+        body,
+        html,
+        attachments: Array.isArray(attachments) ? attachments : [],
+        threadId: threadId || undefined,
+        inReplyTo: inReplyTo || undefined,
+        references: references || undefined,
+      });
+      console.log('[Gmail] Email sent successfully:', result.messageId);
+      return res.json(result);
+    }
+    console.warn('[Gmail] Token does not include gmail.send. Falling back to SMTP/mock.');
+  } catch (gmailErr) {
+    console.error('[Gmail] Send failed:', gmailErr.message);
+    const smtpConfigured = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+    if (!smtpConfigured) {
+      return res.status(500).json({
+        error: 'Failed to send email through Gmail',
+        details: gmailErr.message,
+        hint: 'Run node Backend/scripts/gmail-authorize.js to grant gmail.send, then restart the backend.'
+      });
+    }
+  }
+
+  // Append attachment links for the SMTP/mock fallback only.
   let finalBody = body;
   if (attachments && Array.isArray(attachments) && attachments.length > 0) {
     finalBody += '\n\n---\nAttached Files:\n' + attachments.map(att => `- ${att.name}: ${att.link}`).join('\n');
@@ -2918,7 +3133,7 @@ app.post('/api/emails/send', async (req, res) => {
       const transporter = nodemailer.createTransport({
         host: smtpHost,
         port: smtpPort,
-        secure: smtpPort === 465, // true for 465, false for other ports
+        secure: smtpPort === 465,
         auth: {
           user: smtpUser,
           pass: smtpPass
@@ -2928,6 +3143,8 @@ app.post('/api/emails/send', async (req, res) => {
       const info = await transporter.sendMail({
         from: `"${process.env.SMTP_FROM_NAME || 'Laser Power & Infra'}" <${smtpUser}>`,
         to,
+        cc: cc || undefined,
+        bcc: bcc || undefined,
         subject,
         text: finalBody
       });
@@ -2939,7 +3156,6 @@ app.post('/api/emails/send', async (req, res) => {
       res.status(500).json({ error: 'Failed to send email via SMTP', details: err.message });
     }
   } else {
-    // Mock Mode
     console.log('\n--- [MOCK EMAIL SENT] ---');
     console.log(`Date: ${new Date().toLocaleString()}`);
     console.log(`To: ${to}`);
@@ -2948,11 +3164,10 @@ app.post('/api/emails/send', async (req, res) => {
     console.log(finalBody);
     console.log('-------------------------\n');
 
-    // Return success in mock mode
-    res.json({ 
-      success: true, 
-      messageId: `mock_msg_${Math.random().toString(36).substring(2, 15)}`, 
-      mode: 'MOCK' 
+    res.json({
+      success: true,
+      messageId: `mock_msg_${Math.random().toString(36).substring(2, 15)}`,
+      mode: 'MOCK'
     });
   }
 });
@@ -3471,7 +3686,7 @@ app.get('/api/all-emails', async (req, res) => {
     let query = `SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender,
                         DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date_received,
                         DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date,
-                        t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority, t.is_important, t.user_labels, t.attach_names, t.attach_links, 
+                        t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority, t.is_important, t.user_labels, t.attach_names, t.attach_links, t.is_unread, t.unread_count, t.is_starred, t.last_message_id,
                         LEFT(t.${colBody}, 3000) as body,
                         LEFT(t.${colBody}, 300) as body_preview 
                  FROM \`${table}\` t`;
@@ -3719,7 +3934,7 @@ app.get('/api/export-emails', async (req, res) => {
     let query = `SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender,
                         DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date_received,
                         DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date,
-                        t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority, t.is_important, t.user_labels, t.attach_names, t.attach_links, 
+                        t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority, t.is_important, t.user_labels, t.attach_names, t.attach_links, t.is_unread, t.unread_count, t.is_starred, t.last_message_id,
                         LEFT(t.${colBody}, 3000) as body,
                         LEFT(t.${colBody}, 300) as body_preview 
                  FROM \`${table}\` t`;
@@ -3853,7 +4068,8 @@ app.get('/api/emails/:id', async (req, res) => {
 
     const [rows] = await conn.execute(`
       SELECT ${colId} as id, thread_id, ${colSubject} as subject, ${colBody} as body, ${colSender} as sender, ${colDate} as date,
-             cc_details, to_details, company, category, sub_category, priority, is_important, user_labels, attach_names, attach_links, ocr_text, ai_summary
+             cc_details, to_details, company, category, sub_category, priority, is_important, user_labels, attach_names, attach_links, ocr_text, ai_summary,
+             is_unread, unread_count, is_starred, last_message_id
       FROM \`${table}\`
       WHERE ${colId} = ?
     `, [req.params.id]);
@@ -4978,6 +5194,221 @@ app.get('/api/sender-companies', async (req, res) => {
   }
 });
 
+// ----------------------------------------------------
+// Gmail Mailbox API (live Gmail read/write)
+// ----------------------------------------------------
+function handleMailboxError(res, err, fallbackMessage) {
+  const message = err && err.message ? err.message : String(err);
+  const isQuota = (err && err.code === 'GMAIL_QUOTA') || /quota|rate limit|rateLimitExceeded|429/i.test(message);
+  const needsAuth = !isQuota && /insufficient|scope|permission|invalid_grant|unauthorized|401|403/i.test(message);
+  console.error(`[Mailbox] ${fallbackMessage}:`, message);
+
+  if (isQuota) {
+    const retryAfter = Number(err && err.retryAfter) || Number(process.env.GMAIL_QUOTA_RETRY_SECONDS) || 60;
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({
+      error: 'GMAIL_QUOTA',
+      message: `Gmail rate limit reached. Please retry in ${retryAfter} seconds.`,
+      details: message,
+      retryAfter,
+      isQuota: true
+    });
+  }
+
+  res.status(needsAuth ? 403 : 500).json({
+    error: fallbackMessage,
+    details: message,
+    needsAuth,
+    hint: needsAuth
+      ? 'Run node Backend/scripts/gmail-authorize.js to grant gmail.modify and gmail.send, then restart the backend.'
+      : undefined
+  });
+}
+
+app.get('/api/mailbox/profile', async (req, res) => {
+  try {
+    const profile = await gmailMailbox.getProfile({ force: req.query.refresh === '1' });
+    res.json({ success: true, ...profile });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not load Gmail profile');
+  }
+});
+
+app.get('/api/mailbox/counts', async (req, res) => {
+  try {
+    const counts = await gmailMailbox.getCounts({ force: req.query.refresh === '1' });
+    const capabilities = gmailMailbox.getCapabilities();
+    res.json({ success: true, counts, capabilities });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not load mailbox counts');
+  }
+});
+
+app.get('/api/mailbox/threads', async (req, res) => {
+  try {
+    const defaultLimit = Number(process.env.MAILBOX_PAGE_SIZE) || 10;
+    const { folder = 'inbox', q = '', pageToken = '', limit = defaultLimit } = req.query;
+    const result = await gmailMailbox.listThreads({
+      folder: String(folder),
+      q: String(q || ''),
+      pageToken: pageToken ? String(pageToken) : undefined,
+      limit: Math.min(Number(limit) || defaultLimit, 25),
+      force: req.query.refresh === '1',
+    });
+    res.json({ success: true, folder, ...result });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not load mailbox threads');
+  }
+});
+
+app.get('/api/mailbox/threads/:threadId', async (req, res) => {
+  try {
+    const thread = await gmailMailbox.getThreadDetail(req.params.threadId, {
+      force: req.query.refresh === '1',
+    });
+    res.json({ success: true, thread });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not load email thread');
+  }
+});
+
+app.get('/api/mailbox/attachments/:messageId/:attachmentId', async (req, res) => {
+  try {
+    const buffer = await gmailMailbox.downloadAttachment(req.params.messageId, req.params.attachmentId);
+    const mime = String(req.query.mime || 'application/octet-stream');
+    const safeMime = /^[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+$/.test(mime)
+      ? mime
+      : 'application/octet-stream';
+    const filename = String(req.query.filename || 'attachment').replace(/[\r\n"]/g, '_');
+    const inline = String(req.query.inline || '') === '1';
+    res.setHeader('Content-Type', safeMime);
+    res.setHeader('Content-Length', buffer.length);
+    res.setHeader(
+      'Content-Disposition',
+      `${inline ? 'inline' : 'attachment'}; filename="${filename}"`
+    );
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(buffer);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not download attachment');
+  }
+});
+
+app.post('/api/mailbox/send', async (req, res) => {
+  try {
+    const result = await gmailMailbox.sendEmail(req.body || {});
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not send email');
+  }
+});
+
+app.post('/api/mailbox/threads/:threadId/reply', async (req, res) => {
+  try {
+    const result = await gmailMailbox.replyToThread(req.params.threadId, req.body || {});
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not send reply');
+  }
+});
+
+app.post('/api/mailbox/threads/:threadId/forward', async (req, res) => {
+  try {
+    const result = await gmailMailbox.forwardThread(req.params.threadId, req.body || {});
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not forward email');
+  }
+});
+
+app.post('/api/mailbox/threads/:threadId/modify', async (req, res) => {
+  try {
+    const action = String((req.body && req.body.action) || '');
+    if (!action) return res.status(400).json({ error: 'action is required' });
+    const state = await gmailMailbox.modifyThread(req.params.threadId, action);
+    await updateThreadReadState(state.threadId, state);
+    res.json({ success: true, ...state });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not update email');
+  }
+});
+
+app.post('/api/mailbox/reconcile-read', async (req, res) => {
+  try {
+    const threadIds = (Array.isArray(req.body && req.body.threadIds) ? req.body.threadIds : []).slice(0, 20);
+    if (threadIds.length === 0) return res.json({ success: true, states: [] });
+    const states = await gmailMailbox.reconcileThreadStates(threadIds);
+    for (const state of states) {
+      await updateThreadReadState(state.threadId, state);
+    }
+    res.json({ success: true, states });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not reconcile read state');
+  }
+});
+
+app.get('/api/mailbox/drafts', async (req, res) => {
+  try {
+    const defaultLimit = Number(process.env.MAILBOX_PAGE_SIZE) || 10;
+    const { pageToken = '', limit = defaultLimit } = req.query;
+    const result = await gmailMailbox.listThreads({
+      folder: 'drafts',
+      pageToken: pageToken ? String(pageToken) : undefined,
+      limit: Math.min(Number(limit) || defaultLimit, 25),
+      force: req.query.refresh === '1',
+    });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not load drafts');
+  }
+});
+
+app.post('/api/mailbox/drafts', async (req, res) => {
+  try {
+    const result = await gmailMailbox.saveDraft(req.body || {});
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not save draft');
+  }
+});
+
+app.post('/api/mailbox/drafts/:draftId/send', async (req, res) => {
+  try {
+    const result = await gmailMailbox.sendDraft(req.params.draftId);
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not send draft');
+  }
+});
+
+app.delete('/api/mailbox/drafts/:draftId', async (req, res) => {
+  try {
+    const result = await gmailMailbox.deleteDraft(req.params.draftId);
+    res.json(result);
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not delete draft');
+  }
+});
+
+// Read/unread toggle from the existing Tender / All Emails screens
+app.post('/api/emails/:id/read', async (req, res) => {
+  try {
+    const read = Boolean(req.body && req.body.read);
+    const threadId = await getThreadIdForDbId(req.params.id);
+    if (!threadId) return res.status(404).json({ error: 'Email thread not found' });
+    const state = await gmailMailbox.modifyThread(threadId, read ? 'read' : 'unread');
+    await updateThreadReadState(threadId, state);
+    res.json({
+      success: true,
+      is_unread: state.isUnread ? 1 : 0,
+      unread_count: state.unreadCount,
+      is_starred: state.isStarred ? 1 : 0,
+    });
+  } catch (err) {
+    handleMailboxError(res, err, 'Could not update read state');
+  }
+});
+
 // Serve frontend assets in production (Vite builds to parent/dist)
 const distPath = fs.existsSync(path.join(__dirname, '..', 'frontend', 'dist'))
   ? path.join(__dirname, '..', 'frontend', 'dist')
@@ -5046,6 +5477,11 @@ setInterval(runPeriodicDocketSync, DOCKET_SYNC_INTERVAL_MS);
 
 app.listen(PORT, async () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  // Start AI engine health monitoring (logs config warnings once, then probes periodically with backoff)
+  const ollamaCfg = resolveOllamaConfig(process.env);
+  console.log(`[AI Health] Monitoring Ollama at ${ollamaCfg.root} (model ${ollamaCfg.model}, from ${ollamaCfg.source}).`);
+  ollamaCfg.warnings.forEach(w => console.warn(`[AI Health] Config warning: ${w}`));
+  aiHealthMonitor.start();
   // Run initial sync on startup to populate match data immediately
   try {
     console.log('Running initial background sync on startup...');

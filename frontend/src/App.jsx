@@ -1,4 +1,4 @@
-// Match Emails Portal v1.2.1
+﻿// Match Emails Portal v1.2.1
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   FileText,
@@ -31,8 +31,19 @@ import {
   Grid,
   Layers,
   X,
-  Tag
+  Tag,
+  Eye,
+  EyeOff,
+  Forward,
+  Reply,
+  ReplyAll,
+  Sun,
+  Moon
 } from 'lucide-react';
+import Mailbox from './Mailbox';
+import EmailHtmlViewer from './EmailHtmlViewer';
+import EmailComposer from './EmailComposer';
+import { formatSheetDate, pluralize, getTenderTitle, getTenderNumber } from './tenderFormat';
 
 function parseEmailThread(body, defaultSender = 'Sender') {
   if (!body || !body.trim()) return [];
@@ -495,7 +506,7 @@ function SearchableMultiSelectDropdown({ label, icon, options = [], selectedValu
           <span style={{
             backgroundColor: 'rgba(255,255,255,0.25)',
             padding: '0.1rem 0.45rem',
-            borderRadius: '10px',
+            borderRadius: '4px',
             fontSize: '0.72rem',
             fontWeight: 700
           }}>
@@ -504,7 +515,7 @@ function SearchableMultiSelectDropdown({ label, icon, options = [], selectedValu
         ) : (
           <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>All</span>
         )}
-        <span style={{ fontSize: '0.65rem', marginLeft: '0.25rem' }}>{isOpen ? '▲' : '▼'}</span>
+        <span style={{ fontSize: '0.65rem', marginLeft: '0.25rem' }}>{isOpen ? 'â–²' : 'â–¼'}</span>
       </button>
 
       {isOpen && (
@@ -517,7 +528,7 @@ function SearchableMultiSelectDropdown({ label, icon, options = [], selectedValu
           maxWidth: '380px',
           backgroundColor: 'var(--bg-card, #ffffff)',
           border: '1px solid var(--border-color, rgba(255,255,255,0.15))',
-          borderRadius: '12px',
+          borderRadius: '4px',
           boxShadow: '0 12px 35px rgba(0,0,0,0.25)',
           padding: '0.75rem',
           display: 'flex',
@@ -687,9 +698,9 @@ function App() {
 
   const [theme, setThemeState] = useState(() => {
     try {
-      return localStorage.getItem('siteTheme') || '';
+      return localStorage.getItem('siteTheme') === 'light' ? 'light' : 'dark';
     } catch (e) {
-      return '';
+      return 'dark';
     }
   });
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -1371,6 +1382,9 @@ function App() {
   const [detailedEmailLoading, setDetailedEmailLoading] = useState(false);
   const [emailViewMode, setEmailViewMode] = useState('threaded');
   const [expandedThreadMessages, setExpandedThreadMessages] = useState({ 0: true });
+  const [inlineReply, setInlineReply] = useState(null);
+  const [inlineSending, setInlineSending] = useState(false);
+  const [inlineStatus, setInlineStatus] = useState('');
 
   // deadline extraction runs automatically on backend during sync; no manual button needed
 
@@ -1487,7 +1501,7 @@ function App() {
 
           // Show AI Smart-Label Propagation notification
           if (data.propagatedCount && data.propagatedCount > 0) {
-            const subjectsList = data.propagatedEmails.map(e => `• ${e.subject}`).slice(0, 10).join('\n');
+            const subjectsList = data.propagatedEmails.map(e => `â€¢ ${e.subject}`).slice(0, 10).join('\n');
             const limitMsg = data.propagatedEmails.length > 10 ? `\n...and ${data.propagatedEmails.length - 10} more.` : '';
             alert(`AI Smart-Label Propagation Success!\n\n` +
                   `The AI successfully identified and auto-labeled ${data.propagatedCount} other related emails in your database:\n\n` +
@@ -1500,8 +1514,228 @@ function App() {
     }
   };
 
-  const handleRemoveLabel = (email, labelToRemove) => {
-    if (!email.user_labels) return;
+  const handleToggleRead = async (email) => {
+    if (!email || !email.id) return;
+    const nextRead = !Boolean(email.is_unread);
+    try {
+      const res = await fetch(`/api/emails/${email.id}/read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ read: nextRead })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.details || data.error || 'Could not update read state in Gmail.');
+        return;
+      }
+
+      const patch = {
+        is_unread: data.is_unread,
+        unread_count: data.unread_count,
+        is_starred: data.is_starred
+      };
+      const patchList = (list) => list.map(item => (
+        String(item.id) === String(email.id) ? { ...item, ...patch } : item
+      ));
+
+      setAllEmails(prev => patchList(prev));
+      setRecentMatches(prev => patchList(prev));
+      setTenderEmails(prev => patchList(prev));
+      setEmailsList(prev => patchList(prev));
+      setSelectedEmail(prev => (
+        prev && String(prev.id) === String(email.id) ? { ...prev, ...patch } : prev
+      ));
+      setDetailedEmail(prev => (
+        prev && String(prev.id) === String(email.id) ? { ...prev, ...patch } : prev
+      ));
+    } catch (err) {
+      console.error('Failed to update read state:', err);
+      alert('Network error while updating read state.');
+    }
+  };
+
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+    reader.onerror = () => reject(reader.error || new Error('Could not read file'));
+    reader.readAsDataURL(file);
+  });
+
+  const buildInlineCompose = (email, mode) => {
+    const recipient = email.sender || '';
+    const cc = mode === 'replyAll'
+      ? mergeEmailLists(email.to_details, email.cc_details)
+        .split(',')
+        .map(value => value.trim())
+        .filter(value => value && !value.toLowerCase().includes(recipient.toLowerCase()))
+        .join(', ')
+      : '';
+    const subject = String(email.subject || '');
+    return {
+      mode,
+      to: recipient,
+      cc,
+      bcc: '',
+      subject: mode === 'forward'
+        ? (/^fwd?\s*:/i.test(subject) ? subject : `Fwd: ${subject}`)
+        : (/^re\s*:/i.test(subject) ? subject : `Re: ${subject}`),
+      body: '',
+      attachments: [],
+      includeOriginalAttachments: true,
+      threadId: email.thread_id || null,
+      sourceEmailId: email.id,
+      draftId: null
+    };
+  };
+
+  const openInlineReply = async (email, mode = 'reply') => {
+    if (!email) return;
+    setInlineStatus('');
+    setInlineReply(buildInlineCompose(email, mode));
+    if (!detailedEmail || String(detailedEmail.id) !== String(email.id)) {
+      await handleOpenEmailDetail(email.id);
+    }
+    window.setTimeout(() => {
+      document.getElementById('inline-email-composer')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 350);
+  };
+
+  const handleOpenInlineReplyForTender = async (tender) => {
+    try {
+      const res = await fetch(`/api/tenders/${tender.rowNumber}/emails?excludeTenderTiger=${excludeTenderTiger}&docket_no=${encodeURIComponent(tender.docketNo || '')}&tender_no=${encodeURIComponent(tender.tenderNoRaw || '')}`);
+      const emails = await res.json();
+      if (!Array.isArray(emails) || emails.length === 0) {
+        alert('No matched emails found to reply to.');
+        return;
+      }
+      const latest = emails.find(item => String(item.id) === String(tender.latestEmailId)) || emails[0];
+      await openInlineReply(latest, 'reply');
+    } catch (err) {
+      console.error('Failed to open inline reply:', err);
+      alert('Could not open the reply composer.');
+    }
+  };
+
+  const handleInlineChange = (patch) => {
+    setInlineReply(prev => prev ? { ...prev, ...patch } : prev);
+  };
+
+  const handleInlineFiles = async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (files.length === 0 || !inlineReply) return;
+    try {
+      const items = [];
+      for (const file of files) {
+        if (file.size > 20 * 1024 * 1024) {
+          alert(`${file.name} is larger than 20 MB.`);
+          return;
+        }
+        items.push({
+          name: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          dataBase64: await fileToBase64(file),
+          size: file.size
+        });
+      }
+      setInlineReply(prev => prev ? { ...prev, attachments: [...(prev.attachments || []), ...items] } : prev);
+    } catch (err) {
+      alert(`Could not read attachment: ${err.message}`);
+    }
+  };
+
+  const handleInlineRemoveAttachment = (index) => {
+    setInlineReply(prev => prev ? {
+      ...prev,
+      attachments: (prev.attachments || []).filter((_, idx) => idx !== index)
+    } : prev);
+  };
+
+  const handleInlineSend = async () => {
+    if (!inlineReply) return;
+    if (!inlineReply.to || !inlineReply.subject || !inlineReply.body) {
+      alert('Recipient, subject, and message are required.');
+      return;
+    }
+    setInlineSending(true);
+    setInlineStatus('');
+    try {
+      const isThreadReply = inlineReply.threadId &&
+        ['reply', 'replyAll', 'forward'].includes(inlineReply.mode);
+      let res;
+      if (isThreadReply) {
+        const endpoint = inlineReply.mode === 'forward' ? 'forward' : 'reply';
+        res = await fetch(`/api/mailbox/threads/${encodeURIComponent(inlineReply.threadId)}/${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: inlineReply.to,
+            cc: inlineReply.cc,
+            bcc: inlineReply.bcc,
+            subject: inlineReply.subject,
+            body: inlineReply.body,
+            attachments: inlineReply.attachments || [],
+            replyAll: inlineReply.mode === 'replyAll',
+            includeOriginalAttachments: Boolean(inlineReply.includeOriginalAttachments)
+          })
+        });
+      } else {
+        res = await fetch('/api/emails/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: inlineReply.to,
+            cc: inlineReply.cc,
+            bcc: inlineReply.bcc,
+            subject: inlineReply.subject,
+            body: inlineReply.body,
+            attachments: inlineReply.attachments || [],
+            threadId: inlineReply.threadId || undefined
+          })
+        });
+      }
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.details || data.error || 'Could not send email');
+      }
+      setInlineStatus('Message sent.');
+      setInlineReply(null);
+      const sourceId = inlineReply.sourceEmailId;
+      if (sourceId) await handleOpenEmailDetail(sourceId);
+    } catch (err) {
+      setInlineStatus(err.message);
+    } finally {
+      setInlineSending(false);
+    }
+  };
+
+  const handleInlineSaveDraft = async () => {
+    if (!inlineReply) return;
+    try {
+      const res = await fetch('/api/mailbox/drafts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: inlineReply.to,
+          cc: inlineReply.cc,
+          bcc: inlineReply.bcc,
+          subject: inlineReply.subject,
+          body: inlineReply.body,
+          attachments: inlineReply.attachments || [],
+          draftId: inlineReply.draftId || undefined,
+          threadId: inlineReply.threadId || undefined
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.details || data.error || 'Could not save draft');
+      setInlineReply(prev => prev ? { ...prev, draftId: data.draftId } : prev);
+      setInlineStatus('Draft saved.');
+    } catch (err) {
+      setInlineStatus(err.message);
+    }
+  };
+
+  const handleRemoveLabel = (email, labelToRemove) => {    if (!email.user_labels) return;
     const currentList = email.user_labels.split(',').map(l => l.trim()).filter(l => l !== '');
     const newList = currentList.filter(l => l.toLowerCase() !== labelToRemove.toLowerCase());
     handleUpdateLabels(email.id, newList);
@@ -1672,7 +1906,8 @@ function App() {
           to: data.to,
           subject: data.subject,
           body: data.suggestedReply,
-          attachments: data.attachments || []
+          attachments: data.attachments || [],
+          threadId: data.threadId || null
         });
       } else {
         alert(`Failed to load reply suggestion: ${data.error || 'Unknown error'}`);
@@ -1727,7 +1962,7 @@ function App() {
     }
     
     const confirmSend = window.confirm(
-      `Are you sure you want to automatically generate and send an AI reply to the recipient for Tender: ${tender.tenderFor || 'Tender'}?`
+      `Are you sure you want to automatically generate and send an AI reply to the recipient for Tender: ${getTenderTitle(tender)}?`
     );
     if (!confirmSend) return;
 
@@ -1754,7 +1989,8 @@ function App() {
           to,
           subject,
           body: suggestedReply,
-          attachments: attachments || []
+          attachments: attachments || [],
+          threadId: suggestionData.threadId || undefined
         })
       });
       
@@ -1825,7 +2061,8 @@ function App() {
           to,
           subject,
           body: suggestedReply,
-          attachments: attachments || []
+          attachments: attachments || [],
+          threadId: suggestionData.threadId || undefined
         })
       });
       
@@ -1860,7 +2097,8 @@ function App() {
           to: replyDraft.to,
           subject: replyDraft.subject,
           body: replyDraft.body,
-          attachments: selectedAtts
+          attachments: selectedAtts,
+          threadId: replyDraft.threadId || undefined
         })
       });
       const data = await res.json();
@@ -1939,6 +2177,35 @@ function App() {
     fetchRecentMatches();
     fetchMatchingRules();
   }, []);
+
+  // Poll AI engine (Ollama) health every 60s so the offline banner appears/clears on its own
+  useEffect(() => {
+    const pollAiHealth = async () => {
+      try {
+        const res = await fetch('/api/ai/health');
+        if (res.status !== 200 && res.status !== 503) return;
+        const aiEngine = await res.json();
+        setStatus(prev => ({
+          ...prev,
+          aiEngine,
+          openaiKey: aiEngine.activeProvider === 'ollama' ? aiEngine.status === 'ok' : prev.openaiKey
+        }));
+      } catch {
+        // backend unreachable: leave the last known status
+      }
+    };
+    const interval = setInterval(pollAiHealth, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const recheckAiEngine = async () => {
+    try {
+      await fetch('/api/ai/health/check', { method: 'POST' });
+    } catch {
+      // ignore, fetchStatus below shows the result
+    }
+    fetchStatus();
+  };
 
   // Poll for background match updates and sync status every 30 seconds
   useEffect(() => {
@@ -2264,11 +2531,9 @@ function App() {
   const applyTheme = (newTheme) => {
     try {
       const body = document.body;
-      body.classList.remove('theme-dark', 'theme-pink');
-      if (newTheme === 'dark') {
-        body.classList.add('theme-dark');
-      } else if (newTheme === 'pink') {
-        body.classList.add('theme-pink');
+      body.classList.remove('theme-dark', 'theme-pink', 'theme-light');
+      if (newTheme === 'light') {
+        body.classList.add('theme-light');
       }
       setThemeState(newTheme);
       localStorage.setItem('siteTheme', newTheme);
@@ -2279,13 +2544,10 @@ function App() {
 
   // Initialize theme on mount
   useEffect(() => {
-    if (theme) {
-      const body = document.body;
-      body.classList.remove('theme-dark', 'theme-pink');
-      if (theme === 'dark') body.classList.add('theme-dark');
-      if (theme === 'pink') body.classList.add('theme-pink');
-    }
-  }, []); // run once
+    const body = document.body;
+    body.classList.remove('theme-dark', 'theme-pink', 'theme-light');
+    if (theme === 'light') body.classList.add('theme-light');
+  }, []);
 
   const fetchTenders = async ({ showLoading = true } = {}) => {
     if (fetchTendersAbortRef.current) fetchTendersAbortRef.current.abort();
@@ -2630,7 +2892,7 @@ function App() {
       ? <span style={{ marginRight: '0.2rem', opacity: 0.8, fontSize: '0.8rem', fontWeight: 'bold' }}>#</span>
       : isOutsider
       ? null
-      : <span style={{ marginRight: '0.35rem', fontSize: '0.9rem', lineHeight: 1, color: actualColor }}>•</span>;
+      : <span style={{ marginRight: '0.35rem', fontSize: '0.9rem', lineHeight: 1, color: actualColor }}>â€¢</span>;
 
     return (
       <span className={isCodeword ? 'codeword-badge' : 'company-badge'} style={badgeStyle}>
@@ -2666,6 +2928,18 @@ function App() {
   const [subCatSearch, setSubCatSearch] = useState('');
   const [labelSearch, setLabelSearch] = useState('');
 
+  const pageTitle = {
+    dashboard: 'Dashboard',
+    mailbox: 'Mailbox',
+    tenders: 'Tenders Directory',
+    emails: 'Matched Emails',
+    'all-emails': 'All Emails',
+    'export-mailbox': 'Export Mailbox',
+    'sender-mapping': 'Sender Mapping',
+    rules: 'AI Knowledge Base',
+    config: 'System Configuration',
+  }[activeTab] || 'Dashboard';
+
   return (
     <div className="app-container">
       {/* Sidebar Navigation */}
@@ -2685,7 +2959,7 @@ function App() {
             onClick={() => setSidebarCollapsed(prev => !prev)}
             title={sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
           >
-            {sidebarCollapsed ? '➔' : '◀'}
+            {sidebarCollapsed ? 'âž”' : 'â—€'}
           </button>
         </div>
 
@@ -2698,6 +2972,14 @@ function App() {
             >
               <TrendingUp />
               <span className="nav-text">Dashboard</span>
+            </li>
+            <li
+              className={`nav-item ${activeTab === 'mailbox' ? 'active' : ''}`}
+              onClick={() => setActiveTab('mailbox')}
+              title="Mailbox"
+            >
+              <Mail />
+              <span className="nav-text">Mailbox</span>
             </li>
             <li
               className={`nav-item ${activeTab === 'tenders' ? 'active' : ''}`}
@@ -2775,33 +3057,41 @@ function App() {
       {/* Main Content View */}
       <main className="main-content">
         <header className="header-bar">
+          <div className="header-title">
+            {pageTitle}
+            <span className="header-subtitle">Match Emails Portal</span>
+          </div>
           <div className="header-actions">
             <div className="search-wrapper">
               <Search className="search-icon" size={13} />
               <input
                 type="text"
-                placeholder="Search Client, Tender No, Keyword..."
+                placeholder="Search client, tender no, keyword..."
                 className="search-input"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
             </div>
-            {/* Theme buttons */}
-            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
               <button
-                className={`btn btn-dark ${theme === 'dark' ? 'active' : ''}`}
+                className={`btn btn-dark theme-toggle-btn ${theme === 'dark' ? 'active' : ''}`}
                 onClick={() => applyTheme('dark')}
-                title="Dark Theme"
+                title="Switch to dark theme"
+                aria-label="Switch to dark theme"
+                aria-pressed={theme === 'dark'}
+                type="button"
               >
-                Dark Theme
+                <Moon size={14} /> <span>Dark</span>
               </button>
-
               <button
-                className={`btn btn-pink ${theme === 'pink' ? 'active' : ''}`}
-                onClick={() => applyTheme('pink')}
-                title="Light Pink Theme"
+                className={`btn btn-pink theme-toggle-btn ${theme === 'light' ? 'active' : ''}`}
+                onClick={() => applyTheme('light')}
+                title="Switch to light theme"
+                aria-label="Switch to light theme"
+                aria-pressed={theme === 'light'}
+                type="button"
               >
-                Light Pink
+                <Sun size={14} /> <span>Light</span>
               </button>
 
               {status.sheetId && (
@@ -2810,10 +3100,10 @@ function App() {
                   target="_blank"
                   rel="noopener noreferrer"
                   className="btn btn-secondary btn-small"
-                  style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.76rem', padding: '0.35rem 0.65rem', borderRadius: '6px' }}
+                  style={{ textDecoration: 'none' }}
                   title="Open synced Google Sheet in new tab"
                 >
-                  <ExternalLink size={12} /> Open Google Sheet
+                  <ExternalLink size={12} /> Open Sheet
                 </a>
               )}
             </div>
@@ -2839,6 +3129,35 @@ function App() {
             )}
           </div>
         </header>
+
+        {status.aiEngine && status.aiEngine.status && status.aiEngine.status !== 'ok' && status.aiEngine.status !== 'unknown' && (
+          <div className="ai-engine-banner" role="alert">
+            <AlertCircle size={16} />
+            <div style={{ flex: 1 }}>
+              <strong>
+                AI Engine (Ollama) {status.aiEngine.status === 'degraded' ? 'model missing' : 'offline'}
+                {status.aiEngine.ollamaRole === 'primary' ? ' — matching summaries are using the regex/rule-based fallback.' : ' — fallback AI provider unavailable.'}
+              </strong>
+              <div className="ai-engine-banner-detail">
+                {status.aiEngine.error || 'Health check failed.'}
+                {status.aiEngine.downSince ? ` Since ${formatDateTime(status.aiEngine.downSince)}.` : ''}
+                {status.aiEngine.nextCheckInMs ? ` Retrying automatically every ${Math.round(status.aiEngine.nextCheckInMs / 1000)}s.` : ''}
+              </div>
+              {Array.isArray(status.aiEngine.configWarnings) && status.aiEngine.configWarnings.length > 0 && (
+                <div className="ai-engine-banner-detail">Config: {status.aiEngine.configWarnings.join(' ')}</div>
+              )}
+            </div>
+            <button type="button" className="btn btn-secondary btn-small" onClick={recheckAiEngine}>
+              <RefreshCw size={12} /> Re-check
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'mailbox' && (
+          <div style={{ marginTop: '1rem' }}>
+            <Mailbox />
+          </div>
+        )}
 
         {/* Global Filter Bar & Company Filters (only for tenders, emails, and all-emails tabs) */}
         {['tenders', 'emails', 'all-emails'].includes(activeTab) && (
@@ -2910,7 +3229,7 @@ function App() {
                   )}
                   
                   {(subStartDate || subEndDate || subIntervalValue) && (
-                    <button className="btn-clear" onClick={handleClearSubFilter}>✕</button>
+                    <button className="btn-clear" onClick={handleClearSubFilter}>âœ•</button>
                   )}
                 </div>
               </div>
@@ -2981,7 +3300,7 @@ function App() {
                   )}
 
                   {(recStartDate || recEndDate || recIntervalValue) && (
-                    <button className="btn-clear" onClick={handleClearRecFilter}>✕</button>
+                    <button className="btn-clear" onClick={handleClearRecFilter}>âœ•</button>
                   )}
                 </div>
               </div>
@@ -2998,7 +3317,7 @@ function App() {
               </div>
             </div>
 
-            {/* ── Company & Codeword Filter Bars ── */}
+            {/* â”€â”€ Company & Codeword Filter Bars â”€â”€ */}
             <div className="company-codeword-filter-bar">
               {/* Company row */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -3037,7 +3356,7 @@ function App() {
                 </div>
               </div>
 
-              {/* Codeword row — shown when codewords exist */}
+              {/* Codeword row â€” shown when codewords exist */}
               {codewordsList.length > 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                   <span style={{
@@ -3069,7 +3388,7 @@ function App() {
                           className={`company-filter-btn ${isActive ? 'active' : ''}`}
                           style={btnStyle}
                           onClick={() => setActiveCwFilter(isActive ? '' : (cw ? cw.codeword : ''))}
-                          title={cw ? `${cw.company} · ${cw.category} · ${cw.sub_category}` : 'Show all'}
+                          title={cw ? `${cw.company} Â· ${cw.category} Â· ${cw.sub_category}` : 'Show all'}
                         >
                           {label}
                         </button>
@@ -3203,7 +3522,7 @@ function App() {
 
                 {loading && tenders.length === 0 ? (
                   <div className="loading-container"><div className="spinner"></div></div>
-                ) : dashboardFilteredTenders.filter(t => t.isParticipated || t.matchCount > 0).length === 0 ? (
+                ) : dashboardFilteredTenders.filter(t => t.matchCount > 0).length === 0 ? (
                   <div className="empty-state">
                     <Info size={40} />
                     <h3>No Matched or Participated Tenders</h3>
@@ -3212,7 +3531,7 @@ function App() {
                 ) : (
                   <div className="tenders-list" style={{ opacity: loading ? 0.75 : 1, transition: 'opacity 0.2s' }}>
                     {dashboardFilteredTenders
-                      .filter(t => t.isParticipated || t.matchCount > 0)
+                      .filter(t => t.matchCount > 0)
                       .sort((a, b) => {
                         const da = parseGSheetDate(a.lastDate) || parseGSheetDate(a.docketNo) || (a.latestEmailDate ? new Date(a.latestEmailDate) : null);
                         const db = parseGSheetDate(b.lastDate) || parseGSheetDate(b.docketNo) || (b.latestEmailDate ? new Date(b.latestEmailDate) : null);
@@ -3229,19 +3548,19 @@ function App() {
                         >
                           <div className="tender-header">
                             <div>
-                              <div className="tender-title">{t.tenderFor || 'Tender Item'}</div>
+                              <div className="tender-title" title={t.nameOfWork || t.tenderNoRaw || ''}>{getTenderTitle(t)}</div>
                               <div className="tender-client">{t.client || 'Unknown Client'}</div>
                             </div>
-                            <span className="badge badge-success">{t.matchCount} emails</span>
+                            <span className="badge badge-success">{pluralize(t.matchCount, 'email')}</span>
                           </div>
 
                           <div className="tender-details">
-                            <div className="detail-item">
-                              <span style={{ fontWeight: 600 }}>Tender No:</span> {t.tenderNoRaw.substring(0, 60)}...
+                            <div className="detail-item" title={t.tenderNoRaw || ''}>
+                              <span style={{ fontWeight: 600 }}>Tender No:</span> {getTenderNumber(t) || '—'}
                             </div>
                             <div className="detail-item">
                               <Calendar size={12} />
-                              <span>Last Date: {t.lastDate || 'N/A'}</span>
+                              <span>Last Date: {formatSheetDate(t.lastDate)}</span>
                             </div>
                           </div>
                         </div>
@@ -3295,7 +3614,9 @@ function App() {
                         <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                           {status.openaiKey 
                             ? `${status.aiProvider ? (status.aiProvider.charAt(0).toUpperCase() + status.aiProvider.slice(1)) : 'AI'} active (${status.aiModel || ''})` 
-                            : 'AI offline, using regex fallback'}
+                            : (status.aiEngine && status.aiEngine.error
+                                ? `Offline, using regex fallback: ${status.aiEngine.error}`
+                                : 'AI offline, using regex fallback')}
                         </div>
                       </div>
                     </div>
@@ -3364,8 +3685,8 @@ function App() {
                         >
                           Date
                           {tenderDateSort
-                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(99,102,241,0.25)', border:'1.5px solid rgba(99,102,241,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#818cf8', marginLeft:'0.25rem' }}>{tenderDateSort === 'asc' ? '↑' : '↓'}</span>
-                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>↕</span>
+                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(99,102,241,0.25)', border:'1.5px solid rgba(99,102,241,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#818cf8', marginLeft:'0.25rem' }}>{tenderDateSort === 'asc' ? 'â†‘' : 'â†“'}</span>
+                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>â†•</span>
                           }
                         </button>
                       </th>
@@ -3386,8 +3707,8 @@ function App() {
                         >
                           Submission Date
                           {submissionDateSort
-                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(16,185,129,0.25)', border:'1.5px solid rgba(16,185,129,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#34d399', marginLeft:'0.25rem' }}>{submissionDateSort === 'asc' ? '↑' : '↓'}</span>
-                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>↕</span>
+                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(16,185,129,0.25)', border:'1.5px solid rgba(16,185,129,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#34d399', marginLeft:'0.25rem' }}>{submissionDateSort === 'asc' ? 'â†‘' : 'â†“'}</span>
+                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>â†•</span>
                           }
                         </button>
                       </th>
@@ -3408,8 +3729,8 @@ function App() {
                         >
                           Extracted Deadline
                           {deadlineSort
-                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(245,158,11,0.25)', border:'1.5px solid rgba(245,158,11,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#fbbf24', marginLeft:'0.25rem' }}>{deadlineSort === 'asc' ? '↑' : '↓'}</span>
-                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>↕</span>
+                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(245,158,11,0.25)', border:'1.5px solid rgba(245,158,11,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#fbbf24', marginLeft:'0.25rem' }}>{deadlineSort === 'asc' ? 'â†‘' : 'â†“'}</span>
+                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>â†•</span>
                           }
                         </button>
                       </th>
@@ -3421,7 +3742,7 @@ function App() {
                       <tr key={`${t.rowNumber ?? 'r'}-${idx}`}>
                         <td style={{ fontWeight: 600 }}>{t.docketNo || 'N/A'}</td>
                         <td>
-                          <div style={{ fontWeight: 600, color: 'var(--text-main)' }}>{t.tenderFor || 'Tender Item'}</div>
+                          <div style={{ fontWeight: 600, color: 'var(--text-main)' }}>{getTenderTitle(t)}</div>
                           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {t.tenderNoRaw}
                           </div>
@@ -3432,7 +3753,7 @@ function App() {
                             {t.participated || 'NO'}
                           </span>
                         </td> */}
-                        <td>{t.lastDate || 'N/A'}</td>
+                        <td>{formatSheetDate(t.lastDate)}</td>
                         {/* <td>
                           <span className={`badge ${
                             t.status?.toLowerCase().includes('awarded') ? 'badge-success' :
@@ -3526,7 +3847,7 @@ function App() {
                                   <button
                                     className="btn btn-primary"
                                     style={{ padding: '0.35rem 0.6rem', fontSize: '0.78rem' }}
-                                    onClick={(e) => { e.stopPropagation(); handleOpenReplyModal(t); }}
+                                    onClick={(e) => { e.stopPropagation(); handleOpenInlineReplyForTender(t); }}
                                     title={t.replyReason || 'Generate reply to the latest matched email'}
                                   >
                                     <Send size={12} />
@@ -3641,10 +3962,18 @@ function App() {
                   <div className="config-value-wrapper">
                     <div className={`config-status-dot ${status.openaiKey ? 'success' : 'warn'}`}></div>
                     <div>
-                      <div style={{ fontWeight: 600 }}>{status.openaiKey ? 'Configured & Active' : 'Not Configured'}</div>
+                      <div style={{ fontWeight: 600 }}>{status.openaiKey ? 'Configured & Active' : (status.aiEngine && status.aiEngine.status === 'down' ? 'Offline' : 'Not Available')}</div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                         {status.openaiKey ? `Active Model: ${status.aiModel || ''}` : 'Regex Fallback Active'}
                       </div>
+                      {status.aiEngine && (
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                          Ollama: {status.aiEngine.url || 'not configured'} · model {status.aiEngine.model || '?'} · {status.aiEngine.status}
+                          {status.aiEngine.lastCheckedAt ? ` · checked ${formatDateTime(status.aiEngine.lastCheckedAt)}` : ''}
+                          {status.aiEngine.error ? <div>{status.aiEngine.error}</div> : null}
+                          {(status.aiEngine.configWarnings || []).map((w, i) => <div key={i}>⚠ {w}</div>)}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -3820,7 +4149,7 @@ function App() {
                 <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => handleFilePreview(e.target.files[0])} style={{ color: 'var(--text-main)' }} />
                 {uploadPreview && (
                   <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                    <p>File: <strong>{uploadPreview.fileName}</strong> — {uploadPreview.total} sender(s) detected</p>
+                    <p>File: <strong>{uploadPreview.fileName}</strong> â€” {uploadPreview.total} sender(s) detected</p>
                     {uploadPreview.sample.length > 0 && (
                       <div><p>Preview (first {uploadPreview.sample.length}):</p>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
@@ -3840,7 +4169,7 @@ function App() {
                         <button key={c} className={`company-toggle-btn ${uploadCompanies.includes(c) ? 'selected' : ''}`}
                           style={uploadCompanies.includes(c) ? { backgroundColor: COMPANY_COLORS[c], color: '#fff', borderColor: COMPANY_COLORS[c] } : { borderColor: COMPANY_COLORS[c], color: COMPANY_COLORS[c] }}
                           onClick={() => setUploadCompanies(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c])}>
-                          {uploadCompanies.includes(c) ? '✓ ' : ''}{c}
+                          {uploadCompanies.includes(c) ? 'âœ“ ' : ''}{c}
                         </button>
                       ))}
                     </div>
@@ -3879,7 +4208,7 @@ function App() {
                     <button key={c} className={`company-toggle-btn ${newSenderCompanies.includes(c) ? 'selected' : ''}`}
                       style={newSenderCompanies.includes(c) ? { backgroundColor: COMPANY_COLORS[c], color: '#fff', borderColor: COMPANY_COLORS[c] } : { borderColor: COMPANY_COLORS[c], color: COMPANY_COLORS[c] }}
                       onClick={() => setNewSenderCompanies(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c])}>
-                      {newSenderCompanies.includes(c) ? '✓ ' : ''}{c}
+                      {newSenderCompanies.includes(c) ? 'âœ“ ' : ''}{c}
                     </button>
                   ))}
                 </div>
@@ -3994,7 +4323,7 @@ function App() {
                         <button key={c} className={`company-toggle-btn ${editMappingCompanies.includes(c) ? 'selected' : ''}`}
                           style={editMappingCompanies.includes(c) ? { backgroundColor: COMPANY_COLORS[c], color: '#fff', borderColor: COMPANY_COLORS[c] } : { borderColor: COMPANY_COLORS[c], color: COMPANY_COLORS[c] }}
                           onClick={() => setEditMappingCompanies(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c])}>
-                          {editMappingCompanies.includes(c) ? '✓ ' : ''}{c}
+                          {editMappingCompanies.includes(c) ? 'âœ“ ' : ''}{c}
                         </button>
                       ))}
                     </div>
@@ -4106,7 +4435,7 @@ function App() {
                       }}
                     >
                       <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
-                        <span style={{ color: '#7c3aed', fontWeight: 'bold', fontSize: '0.9rem' }}>•</span>
+                        <span style={{ color: '#7c3aed', fontWeight: 'bold', fontSize: '0.9rem' }}>â€¢</span>
                         <span style={{ color: 'var(--text-main)', fontSize: '0.9rem', lineHeight: '1.4' }}>{rule.rule}</span>
                       </div>
                       <button 
@@ -4170,7 +4499,7 @@ function App() {
                     <div style={{ marginTop: '0.75rem', maxHeight: '150px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                       {remapResult.deletedMatches.map((dm, idx) => (
                         <div key={idx} style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.4rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
-                          🗑️ <strong>Tender:</strong> {dm.docketNo} — <strong>Subject:</strong> {dm.subject} <br/>
+                          ðŸ—‘ï¸ <strong>Tender:</strong> {dm.docketNo} â€” <strong>Subject:</strong> {dm.subject} <br/>
                           <span style={{ color: '#ef4444' }}>Reason: {dm.reason}</span>
                         </div>
                       ))}
@@ -4197,7 +4526,7 @@ function App() {
                 padding: '1rem',
                 backgroundColor: 'var(--bg-card)',
                 border: '1px solid var(--border-color)',
-                borderRadius: '12px'
+                borderRadius: '4px'
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -4317,7 +4646,7 @@ function App() {
                         <button
                           className="sort-th-btn"
                           onClick={() => setDateSortOrder(o => o === 'asc' ? 'desc' : 'asc')}
-                          title={dateSortOrder === 'asc' ? 'Oldest first — click for Newest' : 'Newest first — click for Oldest'}
+                          title={dateSortOrder === 'asc' ? 'Oldest first â€” click for Newest' : 'Newest first â€” click for Oldest'}
                         >
                           Date Received
                           <span style={{
@@ -4334,7 +4663,7 @@ function App() {
                             color: '#818cf8',
                             marginLeft: '0.25rem',
                             transition: 'all 0.2s ease'
-                          }}>{dateSortOrder === 'asc' ? '↑' : '↓'}</span>
+                          }}>{dateSortOrder === 'asc' ? 'â†‘' : 'â†“'}</span>
                         </button>
                       </th>
                       <th>Subject</th>
@@ -4349,7 +4678,7 @@ function App() {
                     {filteredEmails.map(email => {
                       const parentTender = tenderMap.get(`${email.docket_no}|${email.tender_no}`);
                       const tenderLabel = parentTender 
-                        ? `${parentTender.client} - ${parentTender.tenderFor || 'Tender'}`
+                        ? `${parentTender.client} - ${getTenderTitle(parentTender)}`
                         : `Ref: ${email.docket_no || 'Manual/Participated'} | Tender ID: ${email.tender_no || 'N/A'}`;
 
                       return (
@@ -4382,7 +4711,7 @@ function App() {
                             </div>
                           </td>
                           <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={mergeEmailLists(email.to_details, email.cc_details)}>
-                            {mergeEmailLists(email.to_details, email.cc_details) || '—'}
+                            {mergeEmailLists(email.to_details, email.cc_details) || 'â€”'}
                           </td>
                           <td style={{ fontSize: '0.9rem', color: 'var(--text-main)', maxWidth: '280px', wordBreak: 'break-word' }}>
                             <div style={{ fontWeight: 600 }}>{tenderLabel}</div>
@@ -4427,7 +4756,7 @@ function App() {
               gap: '0.75rem',
               padding: '1rem 1.25rem',
               background: 'rgba(255,255,255,0.02)',
-              borderRadius: '14px',
+              borderRadius: '6px',
               border: '1px solid rgba(255,255,255,0.08)'
             }}>
               {/* Dropdowns Row */}
@@ -4488,7 +4817,7 @@ function App() {
                       setSelectedLabelFilter('');
                     }}
                   >
-                    Reset All Filters ✕
+                    Reset All Filters âœ•
                   </button>
                 )}
               </div>
@@ -4504,7 +4833,7 @@ function App() {
                       key={`cat-${cat}`}
                       style={{
                         display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
-                        padding: '0.2rem 0.65rem', borderRadius: '14px', fontSize: '0.75rem',
+                        padding: '0.2rem 0.65rem', borderRadius: '6px', fontSize: '0.75rem',
                         backgroundColor: `${CATEGORY_COLORS[cat] || '#818cf8'}25`,
                         border: `1px solid ${CATEGORY_COLORS[cat] || '#818cf8'}60`,
                         color: CATEGORY_COLORS[cat] || '#818cf8', fontWeight: 600
@@ -4518,7 +4847,7 @@ function App() {
                           setSelectedCategoryFilter(next);
                         }}
                       >
-                        ✕
+                        âœ•
                       </span>
                     </span>
                   ))}
@@ -4529,7 +4858,7 @@ function App() {
                       key={`sub-${sub}`}
                       style={{
                         display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
-                        padding: '0.2rem 0.65rem', borderRadius: '14px', fontSize: '0.75rem',
+                        padding: '0.2rem 0.65rem', borderRadius: '6px', fontSize: '0.75rem',
                         backgroundColor: 'rgba(99,102,241,0.2)',
                         border: '1px solid rgba(99,102,241,0.4)',
                         color: '#818cf8', fontWeight: 600
@@ -4543,7 +4872,7 @@ function App() {
                           setSelectedSubCategoryFilter(next);
                         }}
                       >
-                        ✕
+                        âœ•
                       </span>
                     </span>
                   ))}
@@ -4554,7 +4883,7 @@ function App() {
                       key={`lbl-${lbl}`}
                       style={{
                         display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
-                        padding: '0.2rem 0.65rem', borderRadius: '14px', fontSize: '0.75rem',
+                        padding: '0.2rem 0.65rem', borderRadius: '6px', fontSize: '0.75rem',
                         backgroundColor: 'rgba(236,72,153,0.2)',
                         border: '1px solid rgba(236,72,153,0.4)',
                         color: '#ec4899', fontWeight: 600
@@ -4568,7 +4897,7 @@ function App() {
                           setSelectedLabelFilter(next);
                         }}
                       >
-                        ✕
+                        âœ•
                       </span>
                     </span>
                   ))}
@@ -4604,7 +4933,7 @@ function App() {
                       onClick={() => setAllEmailsSearch('')}
                       style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', marginLeft: '-1.75rem', zIndex: 5 }}
                     >
-                      ✕
+                      âœ•
                     </button>
                   )}
                 </div>
@@ -4633,7 +4962,7 @@ function App() {
                       onClick={() => setRecipientSearch('')}
                       style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', marginLeft: '-1.75rem', zIndex: 5 }}
                     >
-                      ✕
+                      âœ•
                     </button>
                   )}
                 </div>
@@ -4688,7 +5017,7 @@ function App() {
                         <button
                           className="sort-th-btn"
                           onClick={() => setDateSortOrder(o => o === 'asc' ? 'desc' : 'asc')}
-                          title={dateSortOrder === 'asc' ? 'Oldest first — click for Newest' : 'Newest first — click for Oldest'}
+                          title={dateSortOrder === 'asc' ? 'Oldest first â€” click for Newest' : 'Newest first â€” click for Oldest'}
                         >
                           Date Received
                           <span style={{
@@ -4705,7 +5034,7 @@ function App() {
                             color: '#818cf8',
                             marginLeft: '0.25rem',
                             transition: 'all 0.2s ease'
-                          }}>{dateSortOrder === 'asc' ? '↑' : '↓'}</span>
+                          }}>{dateSortOrder === 'asc' ? 'â†‘' : 'â†“'}</span>
                         </button>
                       </th>
                       <th>Subject & Preview</th>
@@ -4729,6 +5058,19 @@ function App() {
                         </td>
                         <td>
                           <div style={{ fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            {email.is_unread === 1 && (
+                              <span
+                                title={`${email.unread_count || 1} unread message(s)`}
+                                style={{
+                                  width: '8px',
+                                  height: '8px',
+                                  borderRadius: '50%',
+                                  backgroundColor: '#818cf8',
+                                  boxShadow: '0 0 8px rgba(129,140,248,0.8)',
+                                  flexShrink: 0
+                                }}
+                              />
+                            )}
                             {email.is_important === 1 && (
                               <span 
                                 className="badge badge-danger" 
@@ -4756,7 +5098,9 @@ function App() {
                                 Urgent Reply
                               </span>
                             )}
-                            {email.subject}
+                            <span style={{ fontWeight: email.is_unread === 1 ? 800 : 600 }}>
+                              {email.subject}
+                            </span>
                           </div>
                           <div 
                             style={{ 
@@ -4793,7 +5137,7 @@ function App() {
                           </div>
                         </td>
                         <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={mergeEmailLists(email.to_details, email.cc_details)}>
-                          {mergeEmailLists(email.to_details, email.cc_details) || '—'}
+                          {mergeEmailLists(email.to_details, email.cc_details) || 'â€”'}
                         </td>
                         <td>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', alignItems: 'flex-start' }}>
@@ -4841,7 +5185,7 @@ function App() {
                                       style={{ cursor: 'pointer', fontWeight: 'bold', fontSize: '0.65rem' }} 
                                       onClick={() => handleRemoveLabel(email, label)}
                                     >
-                                      ✕
+                                      âœ•
                                     </span>
                                   </span>
                                 );
@@ -4858,7 +5202,7 @@ function App() {
                                 <button
                                   className="btn btn-primary btn-small"
                                   style={{ padding: '0.3rem 0.6rem', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '0.2rem' }}
-                                  onClick={() => handleOpenEmailReplyModal(email)}
+                                  onClick={() => openInlineReply(email, 'reply')}
                                   title={email.reply_reason || 'Generate reply to this email'}
                                 >
                                   <Send size={11} />
@@ -4897,6 +5241,15 @@ function App() {
                             <button
                               className="btn btn-secondary btn-small"
                               style={{ padding: '0.3rem 0.6rem', fontSize: '0.78rem' }}
+                              onClick={() => handleToggleRead(email)}
+                              title={email.is_unread === 1 ? 'Mark as read in Gmail' : 'Mark as unread in Gmail'}
+                            >
+                              {email.is_unread === 1 ? <Eye size={12} /> : <EyeOff size={12} />}
+                              {email.is_unread === 1 ? 'Read' : 'Unread'}
+                            </button>
+                            <button
+                              className="btn btn-secondary btn-small"
+                              style={{ padding: '0.3rem 0.6rem', fontSize: '0.78rem' }}
                               onClick={() => handleOpenEmailDetail(email.id)}
                             >
                               Inspect
@@ -4920,7 +5273,7 @@ function App() {
                   padding: '1rem', 
                   backgroundColor: 'var(--bg-card)', 
                   border: '1px solid var(--border-color)', 
-                  borderRadius: '12px',
+                  borderRadius: '4px',
                   marginTop: '1rem',
                   fontSize: '0.85rem',
                   color: 'var(--text-muted)',
@@ -5002,7 +5355,7 @@ function App() {
                   title="View emails received by export@laserpowerinfra.com"
                 >
                   <Mail size={15} />
-                  <span>📥 Receiving Mails</span>
+                  <span>ðŸ“¥ Receiving Mails</span>
                   <span className="export-count-pill">{exportRecvCount}</span>
                 </button>
                 <button
@@ -5012,7 +5365,7 @@ function App() {
                   title="View emails sent from export@laserpowerinfra.com"
                 >
                   <Send size={15} />
-                  <span>📤 Sending Mails</span>
+                  <span>ðŸ“¤ Sending Mails</span>
                   <span className="export-count-pill">{exportSentCount}</span>
                 </button>
               </div>
@@ -5035,7 +5388,7 @@ function App() {
                       onClick={() => setExportSearch('')}
                       style={{ position: 'absolute', right: '0.75rem', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
                     >
-                      ✕
+                      âœ•
                     </button>
                   )}
                 </div>
@@ -5102,7 +5455,7 @@ function App() {
                       <th style={{ width: '170px', whiteSpace: 'nowrap' }}>
                         <span>Date Received</span>
                         <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-primary)', marginLeft: '0.2rem' }}>
-                          {exportDateSort === 'asc' ? '↑' : '↓'}
+                          {exportDateSort === 'asc' ? 'â†‘' : 'â†“'}
                         </span>
                       </th>
                       <th>Subject & Preview</th>
@@ -5139,16 +5492,16 @@ function App() {
                 <table className="tenders-table" style={{ width: '100%' }}>
                   <thead>
                     <tr>
-                      {/* Header 1: Date Received ↓ */}
+                      {/* Header 1: Date Received â†“ */}
                       <th style={{ width: '170px', whiteSpace: 'nowrap' }}>
                         <button
                           className="sort-th-btn"
                           onClick={() => setExportDateSort(o => o === 'asc' ? 'desc' : 'asc')}
-                          title={exportDateSort === 'asc' ? 'Oldest first — click for Newest' : 'Newest first — click for Oldest'}
+                          title={exportDateSort === 'asc' ? 'Oldest first â€” click for Newest' : 'Newest first â€” click for Oldest'}
                         >
                           <span>Date Received</span>
                           <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-primary)', marginLeft: '0.2rem' }}>
-                            {exportDateSort === 'asc' ? '↑' : '↓'}
+                            {exportDateSort === 'asc' ? 'â†‘' : 'â†“'}
                           </span>
                         </button>
                       </th>
@@ -5363,7 +5716,7 @@ function App() {
                                 </div>
                               )}
                               {!email.to_details && !email.cc_details && (
-                                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
+                                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>â€”</span>
                               )}
                             </div>
                           </td>
@@ -5400,7 +5753,7 @@ function App() {
                   padding: '1rem',
                   backgroundColor: 'var(--bg-card)',
                   border: '1px solid var(--border-color)',
-                  borderRadius: '12px',
+                  borderRadius: '4px',
                   marginTop: '0.5rem',
                   fontSize: '0.85rem',
                   color: 'var(--text-muted)',
@@ -5465,19 +5818,19 @@ function App() {
           <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '900px' }}>
             <div className="modal-header">
               <div>
-                <h2>{selectedTender.tenderFor || 'Tender Item'}</h2>
+                <h2>{getTenderTitle(selectedTender)}</h2>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Date: {selectedTender.docketNo || 'N/A'} | Client: {selectedTender.client}</div>
               </div>
-              <button className="modal-close" onClick={() => setSelectedTender(null)}>✕</button>
+              <button className="modal-close" onClick={() => setSelectedTender(null)}>âœ•</button>
             </div>
 
             <div className="modal-body">
               {/* Tender Details Info Grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', padding: '1rem', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', padding: '1rem', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '4px', border: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
                 <div><strong>Tender No Raw:</strong> <span style={{ color: 'var(--color-secondary)' }}>{selectedTender.tenderNoRaw}</span></div>
-                <div><strong>Submission Deadline:</strong> {selectedTender.lastDate || 'N/A'}</div>
+                <div><strong>Submission Deadline:</strong> {formatSheetDate(selectedTender.lastDate)}</div>
                 <div><strong>Extracted Deadline:</strong> <span style={{ color: selectedTender.deadlineDate && !isSentinelDate(selectedTender.deadlineDate) && isDeadlinePastOrToday(selectedTender.deadlineDate) ? 'var(--color-danger)' : 'inherit' }}>{selectedTender.deadlineDate && !isSentinelDate(selectedTender.deadlineDate) ? formatDateTime(selectedTender.deadlineDate) : 'N/A'}</span></div>
-                <div><strong>Opening Date:</strong> {selectedTender.openingDate || 'N/A'}</div>
+                <div><strong>Opening Date:</strong> {formatSheetDate(selectedTender.openingDate)}</div>
                 <div><strong>Estimated Cost:</strong> {selectedTender.estimatedCost || 'N/A'}</div>
                 <div><strong>EMD Amount:</strong> {selectedTender.emd || 'N/A'}</div>
                 <div><strong>Current Status:</strong> <span className="badge badge-info">{selectedTender.status || 'Active'}</span></div>
@@ -5580,7 +5933,7 @@ function App() {
                         {email.summary ? (
                           <div className="email-summary" onClick={(e) => e.stopPropagation()} style={{ marginTop: '0.75rem', marginBottom: '0.5rem' }}>
                             <div className="email-summary-header">
-                              <span>✨ AI Summary</span>
+                              <span>âœ¨ AI Summary</span>
                               <button
                                 className="btn btn-secondary"
                                 style={{ padding: '0.15rem 0.4rem', fontSize: '0.7rem', height: 'auto', borderRadius: '4px' }}
@@ -5600,7 +5953,7 @@ function App() {
                               onClick={(e) => { e.stopPropagation(); handleManualSummarize(email.id); }}
                               disabled={summarizing}
                             >
-                              ✨ Generate AI Summary
+                              âœ¨ Generate AI Summary
                             </button>
                           </div>
                         )}
@@ -5662,7 +6015,7 @@ function App() {
               maxHeight: '90vh',
               backgroundColor: '#ffffff',
               border: '1px solid #cbd5e1',
-              borderRadius: '14px',
+              borderRadius: '6px',
               boxShadow: '0 20px 50px rgba(0, 0, 0, 0.25)',
               display: 'flex',
               flexDirection: 'column',
@@ -5694,7 +6047,7 @@ function App() {
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap', fontSize: '0.82rem', color: '#64748b' }}>
                     {/* Sender Pill */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', backgroundColor: '#ffffff', padding: '0.25rem 0.65rem', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', backgroundColor: '#ffffff', padding: '0.25rem 0.65rem', borderRadius: '6px', border: '1px solid #e2e8f0', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
                       <div style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#ffffff', fontWeight: 700, fontSize: '0.7rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         {(selectedEmail.sender || 'Sender').replace(/<.*?>/g, '').trim().slice(0, 2).toUpperCase()}
                       </div>
@@ -5702,7 +6055,7 @@ function App() {
                     </div>
 
                     {/* Date Pill */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', backgroundColor: '#ffffff', padding: '0.25rem 0.65rem', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', backgroundColor: '#ffffff', padding: '0.25rem 0.65rem', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
                       <Calendar size={13} color="#6366f1" />
                       <span>{formatDateTime(selectedEmail.date_received || selectedEmail.date)}</span>
                     </div>
@@ -5731,7 +6084,7 @@ function App() {
                           return (
                             <span>
                               <span style={{ color: '#0f172a' }}>{ccs.slice(0, 2).join(', ')}</span>
-                              <button style={{ marginLeft: '0.35rem', padding: '0.1rem 0.45rem', fontSize: '0.68rem', borderRadius: '10px', border: '1px solid #cbd5e1', backgroundColor: '#ffffff', color: '#6366f1', fontWeight: 600, cursor: 'pointer' }} onClick={() => setShowFullCc(true)}>
+                              <button style={{ marginLeft: '0.35rem', padding: '0.1rem 0.45rem', fontSize: '0.68rem', borderRadius: '4px', border: '1px solid #cbd5e1', backgroundColor: '#ffffff', color: '#6366f1', fontWeight: 600, cursor: 'pointer' }} onClick={() => setShowFullCc(true)}>
                                 + {ccs.length - 2} more
                               </button>
                             </span>
@@ -5814,7 +6167,7 @@ function App() {
                       transition: 'all 0.15s ease'
                     }}
                   >
-                    ✕
+                    âœ•
                   </button>
                 </div>
               </div>
@@ -5826,11 +6179,11 @@ function App() {
               {/* LEFT COLUMN: EMAIL THREAD & OCR */}
               <div className="email-modal-left-pane-light" style={{ flex: '1 1 62%', minWidth: 0, padding: '1.1rem 1.4rem', overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', gap: '0.9rem', borderRight: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
                 
-                {/* ✨ AI Summary Card */}
-                <div style={{ padding: '0.9rem 1.15rem', backgroundColor: '#faf5ff', borderRadius: '10px', border: '1px solid #e9d5ff', boxShadow: '0 1px 3px rgba(124, 58, 237, 0.05)' }}>
+                {/* âœ¨ AI Summary Card */}
+                <div style={{ padding: '0.9rem 1.15rem', backgroundColor: '#faf5ff', borderRadius: '4px', border: '1px solid #e9d5ff', boxShadow: '0 1px 3px rgba(124, 58, 237, 0.05)' }}>
                   <div style={{ marginBottom: '0.45rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontWeight: 700, fontSize: '0.85rem', color: '#7c3aed', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                      ✨ AI Executive Summary
+                      âœ¨ AI Executive Summary
                     </span>
                     {selectedEmail.summary && (
                       <button
@@ -5838,7 +6191,7 @@ function App() {
                         onClick={() => handleManualSummarize(selectedEmail.id)}
                         disabled={summarizing}
                       >
-                        {summarizing ? 'Regenerating...' : '🔄 Regenerate'}
+                        {summarizing ? 'Regenerating...' : 'ðŸ”„ Regenerate'}
                       </button>
                     )}
                   </div>
@@ -5851,14 +6204,14 @@ function App() {
                         onClick={() => handleManualSummarize(selectedEmail.id)}
                         disabled={summarizing}
                       >
-                        {summarizing ? 'Generating Summary...' : '✨ Generate AI Summary'}
+                        {summarizing ? 'Generating Summary...' : 'âœ¨ Generate AI Summary'}
                       </button>
                     </div>
                   )}
                 </div>
 
                 {/* Custom Labels Section */}
-                <div style={{ padding: '0.8rem 1rem', backgroundColor: '#ffffff', borderRadius: '10px', border: '1px solid #e2e8f0', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                <div style={{ padding: '0.8rem 1rem', backgroundColor: '#ffffff', borderRadius: '4px', border: '1px solid #e2e8f0', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
                   <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#64748b', marginBottom: '0.45rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                     <FileText size={13} color="#6366f1" />
                     Custom Labels
@@ -5871,7 +6224,7 @@ function App() {
                         return (
                           <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', padding: '0.2rem 0.55rem', fontSize: '0.75rem', borderRadius: '6px', backgroundColor: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0', fontWeight: 500 }}>
                             {label}
-                            <span style={{ cursor: 'pointer', fontWeight: 'bold', marginLeft: '0.2rem' }} onClick={() => handleRemoveLabel(selectedEmail, label)}>✕</span>
+                            <span style={{ cursor: 'pointer', fontWeight: 'bold', marginLeft: '0.2rem' }} onClick={() => handleRemoveLabel(selectedEmail, label)}>âœ•</span>
                           </span>
                         );
                       })
@@ -5885,9 +6238,9 @@ function App() {
                       const isAssigned = existing.includes(lbl.toLowerCase());
                       return (
                         <button key={lbl} 
-                          style={{ padding: '0.2rem 0.5rem', borderRadius: '12px', fontSize: '0.72rem', cursor: 'pointer', backgroundColor: isAssigned ? '#6366f1' : '#f1f5f9', color: isAssigned ? '#ffffff' : '#475569', border: '1px solid ' + (isAssigned ? '#6366f1' : '#cbd5e1'), fontWeight: 500 }}
+                          style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', fontSize: '0.72rem', cursor: 'pointer', backgroundColor: isAssigned ? '#6366f1' : '#f1f5f9', color: isAssigned ? '#ffffff' : '#475569', border: '1px solid ' + (isAssigned ? '#6366f1' : '#cbd5e1'), fontWeight: 500 }}
                           onClick={() => isAssigned ? handleRemoveLabel(selectedEmail, lbl) : handleAddLabel(selectedEmail, lbl)}>
-                          {isAssigned ? '✓' : '+'} {lbl}
+                          {isAssigned ? 'âœ“' : '+'} {lbl}
                         </button>
                       );
                     })}
@@ -5916,14 +6269,14 @@ function App() {
                         )}
 
                         {messagesToRender.map((msg, idx) => {
-                          const stepLabel = idx === 0 ? '📩 Latest Email' : (idx === messagesToRender.length - 1 ? '✉️ Original Inquiry' : `💬 Reply #${messagesToRender.length - idx}`);
+                          const stepLabel = idx === 0 ? 'ðŸ“© Latest Email' : (idx === messagesToRender.length - 1 ? 'âœ‰ï¸ Original Inquiry' : `ðŸ’¬ Reply #${messagesToRender.length - idx}`);
                           const badgeBg = idx === 0 ? '#eff6ff' : '#f8fafc';
                           const badgeColor = idx === 0 ? '#1d4ed8' : '#475569';
                           const badgeBorder = idx === 0 ? '#bfdbfe' : '#cbd5e1';
                           const msgSender = msg.sender || msg.defaultSender || selectedEmail.sender;
 
                           return (
-                            <div key={idx} style={{ position: 'relative', zIndex: 2, backgroundColor: '#ffffff', borderRadius: '10px', border: '1px solid #cbd5e1', padding: '1.15rem', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
+                            <div key={idx} style={{ position: 'relative', zIndex: 2, backgroundColor: '#ffffff', borderRadius: '4px', border: '1px solid #cbd5e1', padding: '1.15rem', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
                               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '0.6rem', marginBottom: '0.75rem', borderBottom: '1px solid #f1f5f9', flexWrap: 'wrap', gap: '0.5rem' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flex: 1, minWidth: 0 }}>
                                   <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: idx === 0 ? 'linear-gradient(135deg, #6366f1, #4f46e5)' : '#cbd5e1', color: '#ffffff', fontWeight: 700, fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -5936,7 +6289,7 @@ function App() {
                                         {stepLabel}
                                       </span>
                                     </div>
-                                    {msg.date && <div style={{ fontSize: '0.73rem', color: '#64748b', marginTop: '0.15rem' }}>📅 {msg.date}</div>}
+                                    {msg.date && <div style={{ fontSize: '0.73rem', color: '#64748b', marginTop: '0.15rem' }}>ðŸ“… {msg.date}</div>}
                                   </div>
                                 </div>
                               </div>
@@ -5953,88 +6306,15 @@ function App() {
                                 let rawMsgText = msg.body || msg.text || '';
                                 let msgText = rawMsgText.replace(/^--- Message \d+ From:.*?---\s*/gi, '').trim();
                                 msgText = msgText.replace(/(\r?\n){3,}/g, '\n\n');
-
-                                const { css, cleanText } = extractCssFromText(msgText);
-                                const lower = cleanText.toLowerCase();
-
-                                const hasHtml = (
-                                  lower.includes('<html') ||
-                                  lower.includes('<div') ||
-                                  lower.includes('<p') ||
-                                  lower.includes('<span') ||
-                                  lower.includes('<table') ||
-                                  lower.includes('<body') ||
-                                  lower.includes('<br') ||
-                                  lower.includes('<a ') ||
-                                  lower.includes('<!doctype html') ||
-                                  /<[a-z][\s\S]*>/i.test(cleanText)
-                                );
-
-                                const hasCss = css.trim().length > 0;
-
-                                if (hasHtml || hasCss) {
-                                  const bodyContent = hasHtml ? cleanText : `<div style="white-space: pre-wrap; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.6;">${cleanText}</div>`;
-                                  return (
-                                    <div style={{ border: '1px solid #cbd5e1', borderRadius: '8px', overflow: 'hidden', backgroundColor: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.03)' }}>
-                                      <iframe
-                                        title={`Matched Message ${idx}`}
-                                        srcDoc={`
-                                          <!DOCTYPE html>
-                                          <html>
-                                            <head>
-                                              <meta charset="utf-8">
-                                              <style>
-                                                body {
-                                                  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                                                  font-size: 14px;
-                                                  line-height: 1.65;
-                                                  color: #1e293b;
-                                                  margin: 1.1rem;
-                                                  word-wrap: break-word;
-                                                }
-                                                img { max-width: 100%; height: auto; }
-                                                table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; }
-                                                th, td { border: 1px solid #cbd5e1; padding: 6px 10px; font-size: 13px; text-align: left; }
-                                                th { background-color: #f1f5f9; font-weight: 700; }
-                                                a { color: #2563eb; text-decoration: underline; }
-                                                ${css}
-                                              </style>
-                                            </head>
-                                            <body>
-                                              ${bodyContent}
-                                            </body>
-                                          </html>
-                                        `}
-                                        style={{ width: '100%', height: '360px', border: 'none', display: 'block', background: '#ffffff' }}
-                                        sandbox="allow-popups"
-                                      />
-                                    </div>
-                                  );
-                                }
-
-                                const isTabular = lower.includes('sl ') || lower.includes('uom') || lower.includes('qty') || lower.includes('discount') || lower.includes('rate') || lower.includes('make') || /^\s*\d+\s+[a-z]/im.test(cleanText);
-                                const formattedText = autoFormatUnstructuredText(msgText);
-
+                                const { cleanText } = extractCssFromText(msgText);
+                                const looksLikeHtml = /<[a-z][\s\S]*>/i.test(cleanText || '');
                                 return (
-                                  <div 
-                                    style={{ 
-                                      whiteSpace: 'pre-wrap', 
-                                      fontFamily: isTabular ? 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace' : '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', 
-                                      fontSize: isTabular ? '0.84rem' : '0.88rem', 
-                                      lineHeight: '1.7', 
-                                      color: '#0f172a',
-                                      wordBreak: 'break-word',
-                                      backgroundColor: '#f8fafc',
-                                      padding: '1rem 1.15rem',
-                                      borderRadius: '8px',
-                                      border: '1px solid #cbd5e1',
-                                      maxHeight: '450px',
-                                      overflowY: 'auto',
-                                      letterSpacing: isTabular ? '-0.15px' : 'normal'
-                                    }}
-                                  >
-                                    {formattedText}
-                                  </div>
+                                  <EmailHtmlViewer
+                                    html={looksLikeHtml ? cleanText : null}
+                                    text={msgText}
+                                    title={`Matched Message ${idx}`}
+                                    height={380}
+                                  />
                                 );
                               })()}
                             </div>
@@ -6051,11 +6331,11 @@ function App() {
                   if (!ocrContent || !ocrContent.trim()) return null;
 
                   return (
-                    <div style={{ backgroundColor: '#ffffff', borderRadius: '10px', border: '1px solid #e2e8f0', padding: '1.15rem', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
+                    <div style={{ backgroundColor: '#ffffff', borderRadius: '4px', border: '1px solid #e2e8f0', padding: '1.15rem', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
                         <div style={{ fontSize: '0.85rem', color: '#0f172a', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                           <Paperclip size={15} color="#4f46e5" />
-                          📄 Extracted PDF & Attachment Text (OCR)
+                          ðŸ“„ Extracted PDF & Attachment Text (OCR)
                         </div>
                         <button style={{ padding: '0.22rem 0.6rem', fontSize: '0.72rem', borderRadius: '6px', cursor: 'pointer', border: '1px solid #cbd5e1', backgroundColor: '#f8fafc', color: copySuccess ? '#15803d' : '#475569', fontWeight: 600 }}
                           onClick={() => {
@@ -6063,7 +6343,7 @@ function App() {
                             setCopySuccess(true);
                             setTimeout(() => setCopySuccess(false), 2000);
                           }}>
-                          {copySuccess ? '✓ Copied!' : '📋 Copy OCR Text'}
+                          {copySuccess ? 'âœ“ Copied!' : 'ðŸ“‹ Copy OCR Text'}
                         </button>
                       </div>
                       <div style={{ maxHeight: '240px', overflowY: 'auto', fontSize: '0.82rem', lineHeight: '1.6', backgroundColor: '#f8fafc', padding: '0.9rem', borderRadius: '8px', border: '1px solid #e2e8f0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#334155' }}>
@@ -6094,7 +6374,7 @@ function App() {
                     return (
                       <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
                         <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span>🎯 Tender Match Info</span>
+                          <span>ðŸŽ¯ Tender Match Info</span>
                           <span style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem', borderRadius: '4px', backgroundColor: selectedEmail.confidence === 'HIGH' ? '#ecfdf5' : '#fffbeb', color: selectedEmail.confidence === 'HIGH' ? '#065f46' : '#b45309', border: selectedEmail.confidence === 'HIGH' ? '1px solid #a7f3d0' : '1px solid #fde68a', fontWeight: 700 }}>
                             {selectedEmail.confidence || 'HIGH'} Confidence
                           </span>
@@ -6109,7 +6389,7 @@ function App() {
                         {matchInfo && (
                           <div style={{ marginTop: '0.65rem', paddingTop: '0.55rem', borderTop: '1px solid #e2e8f0' }}>
                             <div style={{ fontSize: '0.73rem', fontWeight: 700, color: '#475569', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem', flexWrap: 'wrap' }}>
-                              📍 Matched In:
+                              ðŸ“ Matched In:
                               <span style={{ color: '#1e40af', fontWeight: 700, backgroundColor: '#eff6ff', padding: '0.15rem 0.45rem', borderRadius: '4px', border: '1px solid #bfdbfe' }}>
                                 {matchInfo.location}
                               </span>
@@ -6131,11 +6411,11 @@ function App() {
                             <div style={{ display: 'flex', gap: '0.3rem' }}>
                               <button style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', backgroundColor: '#ecfdf5', color: '#065f46', border: '1px solid #a7f3d0', borderRadius: '4px', cursor: 'pointer', fontWeight: 600 }}
                                 onClick={() => { setShowFeedbackForm(true); setFeedbackWasCorrect(true); }}>
-                                ✓ Correct
+                                âœ“ Correct
                               </button>
                               <button style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: '4px', cursor: 'pointer', fontWeight: 600 }}
                                 onClick={() => { setShowFeedbackForm(true); setFeedbackWasCorrect(false); }}>
-                                ✕ Wrong
+                                âœ• Wrong
                               </button>
                             </div>
                           )}
@@ -6181,7 +6461,7 @@ function App() {
                   {/* 2. COMPANY & CATEGORY INFO */}
                   <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
                     <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-                      🏢 Organization & Category
+                      ðŸ¢ Organization & Category
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.8rem' }}>
                       <div><span style={{ color: '#64748b' }}>Company:</span> <strong style={{ color: '#0f172a' }}>{selectedEmail.company || 'Laser Power & Infra'}</strong></div>
@@ -6256,7 +6536,7 @@ function App() {
                                     setTimeout(() => setCopyFeedbackIdx(null), 1500);
                                   }}
                                 >
-                                  {copyFeedbackIdx === idx ? '✓ Copied' : 'Copy'}
+                                  {copyFeedbackIdx === idx ? 'âœ“ Copied' : 'Copy'}
                                 </button>
                               </div>
                             ))}
@@ -6291,10 +6571,10 @@ function App() {
               <div>
                 <h2 style={{ fontSize: '1.25rem' }}>AI Reply Drafting & Automated Sending</h2>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                  Tender: {replyTender.tenderFor || 'Tender Item'} (Docket: {replyTender.docketNo})
+                  Tender: {getTenderTitle(replyTender)} (Docket: {replyTender.docketNo})
                 </div>
               </div>
-              <button className="modal-close" onClick={() => setReplyTender(null)}>✕</button>
+              <button className="modal-close" onClick={() => setReplyTender(null)}>âœ•</button>
             </div>
 
             <div className="modal-body" style={{ padding: '1.75rem', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -6465,7 +6745,7 @@ function App() {
       {/* RICH EMAIL DETAIL INSPECTOR MODAL */}
       {emailDetailModalOpen && (detailedEmailLoading || detailedEmail) && (
         <div className="modal-backdrop" onClick={() => setEmailDetailModalOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: '1280px', maxWidth: '95vw', height: '88vh', maxHeight: '90vh', backgroundColor: '#ffffff', borderRadius: '14px', border: '1px solid #cbd5e1', boxShadow: '0 20px 50px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div className="modal-content email-reader-light" onClick={(e) => e.stopPropagation()} style={{ width: '1280px', maxWidth: '95vw', height: '88vh', maxHeight: '90vh', backgroundColor: '#ffffff', borderRadius: '6px', border: '1px solid #cbd5e1', boxShadow: '0 20px 50px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             <div className="modal-header">
               <div>
                 <h2>Email Inspector</h2>
@@ -6610,6 +6890,64 @@ function App() {
                       Open in Gmail
                     </a>
 
+                    <button
+                      onClick={() => openInlineReply(detailedEmail, 'reply')}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                        padding: '0.35rem 0.65rem', backgroundColor: '#ffffff', color: '#334155',
+                        border: '1px solid #cbd5e1', fontSize: '0.75rem', fontWeight: 600,
+                        borderRadius: '4px', cursor: 'pointer'
+                      }}
+                      title="Reply inline"
+                    >
+                      <Reply size={12} /> Reply
+                    </button>
+                    <button
+                      onClick={() => openInlineReply(detailedEmail, 'replyAll')}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                        padding: '0.35rem 0.65rem', backgroundColor: '#ffffff', color: '#334155',
+                        border: '1px solid #cbd5e1', fontSize: '0.75rem', fontWeight: 600,
+                        borderRadius: '4px', cursor: 'pointer'
+                      }}
+                      title="Reply all inline"
+                    >
+                      <ReplyAll size={12} /> Reply all
+                    </button>
+                    <button
+                      onClick={() => openInlineReply(detailedEmail, 'forward')}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                        padding: '0.35rem 0.65rem', backgroundColor: '#ffffff', color: '#334155',
+                        border: '1px solid #cbd5e1', fontSize: '0.75rem', fontWeight: 600,
+                        borderRadius: '4px', cursor: 'pointer'
+                      }}
+                      title="Forward inline"
+                    >
+                      <Forward size={12} /> Forward
+                    </button>
+
+                    <button
+                      onClick={() => handleToggleRead(detailedEmail)}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        padding: '0.35rem 0.65rem',
+                        backgroundColor: '#ffffff',
+                        color: '#4f46e5',
+                        border: '1px solid #c7d2fe',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        borderRadius: '6px',
+                        cursor: 'pointer'
+                      }}
+                      title={detailedEmail.is_unread === 1 ? 'Mark as read in Gmail' : 'Mark as unread in Gmail'}
+                    >
+                      {detailedEmail.is_unread === 1 ? <Eye size={12} /> : <EyeOff size={12} />}
+                      {detailedEmail.is_unread === 1 ? 'Mark Read' : 'Mark Unread'}
+                    </button>
+
                     {detailedEmail.subject && (
                       <a
                         href={`https://mail.google.com/mail/#search/subject:"${encodeURIComponent(detailedEmail.subject.replace(/^(re|fwd):\s*/i, '').trim())}"`}
@@ -6637,7 +6975,7 @@ function App() {
                     )}
                   </>
                 )}
-                <button className="modal-close" onClick={() => setEmailDetailModalOpen(false)}>✕</button>
+                <button className="modal-close" onClick={() => setEmailDetailModalOpen(false)}>âœ•</button>
               </div>
             </div>
 
@@ -6650,7 +6988,7 @@ function App() {
               ) : !detailedEmail ? null : (
               <>
               {/* Metadata Grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', padding: '1rem', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', padding: '1rem', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '4px', border: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
                 <div style={{ gridColumn: 'span 2' }}><strong>Subject:</strong> <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>{detailedEmail.subject}</span></div>
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -6689,7 +7027,7 @@ function App() {
               </div>
 
               {/* Labels Management Panel */}
-              <div style={{ padding: '1rem', backgroundColor: 'rgba(255,255,255,0.01)', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+              <div style={{ padding: '1rem', backgroundColor: 'rgba(255,255,255,0.01)', borderRadius: '4px', border: '1px solid var(--border-color)' }}>
                 <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>Manage Custom Labels</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center', marginBottom: '0.75rem' }}>
                   {detailedEmail.user_labels ? (
@@ -6699,7 +7037,7 @@ function App() {
                       return (
                         <span key={label} className="badge badge-success" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}>
                           {label}
-                          <span style={{ cursor: 'pointer', fontWeight: 'bold' }} onClick={() => handleRemoveLabel(detailedEmail, label)}>✕</span>
+                          <span style={{ cursor: 'pointer', fontWeight: 'bold' }} onClick={() => handleRemoveLabel(detailedEmail, label)}>âœ•</span>
                         </span>
                       );
                     })
@@ -6724,7 +7062,7 @@ function App() {
                           className={`btn ${isAssigned ? 'btn-primary' : 'btn-secondary'}`}
                           style={{
                             padding: '0.3rem 0.75rem',
-                            borderRadius: '15px',
+                            borderRadius: '6px',
                             fontSize: '0.78rem',
                             display: 'inline-flex',
                             alignItems: 'center',
@@ -6743,7 +7081,7 @@ function App() {
                             }
                           }}
                         >
-                          {isAssigned ? '✓' : '+'} {lbl}
+                          {isAssigned ? 'âœ“' : '+'} {lbl}
                         </button>
                       );
                     })}
@@ -6817,8 +7155,8 @@ function App() {
                       const isExpanded = expandedThreadMessages[idx] !== false;
                       const msgSender = msg.sender || msg.defaultSender || detailedEmail.sender || 'Sender';
                       const stepLabel = threadMessages.length > 1
-                        ? (idx === 0 ? '📩 Latest Email' : (idx === threadMessages.length - 1 ? '✉️ Original Inquiry' : `💬 Reply #${threadMessages.length - idx}`))
-                        : '📩 Main Message';
+                        ? (idx === 0 ? 'ðŸ“© Latest Email' : (idx === threadMessages.length - 1 ? 'âœ‰ï¸ Original Inquiry' : `ðŸ’¬ Reply #${threadMessages.length - idx}`))
+                        : 'ðŸ“© Main Message';
 
                       return (
                         <div 
@@ -6827,7 +7165,7 @@ function App() {
                             position: 'relative',
                             zIndex: 2,
                             border: '1px solid var(--border-color)',
-                            borderRadius: '12px',
+                            borderRadius: '4px',
                             backgroundColor: 'var(--bg-card)',
                             overflow: 'hidden',
                             boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
@@ -6876,7 +7214,7 @@ function App() {
                                 </div>
                                 {(msg.date || detailedEmail.date || detailedEmail.date_received) && (
                                   <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
-                                    📅 {msg.date || formatDateTime(detailedEmail.date || detailedEmail.date_received)}
+                                    ðŸ“… {msg.date || formatDateTime(detailedEmail.date || detailedEmail.date_received)}
                                   </div>
                                 )}
                               </div>
@@ -6917,89 +7255,15 @@ function App() {
                                 let rawMsgText = msg.body || msg.text || '';
                                 let msgText = rawMsgText.replace(/^--- Message \d+ From:.*?---\s*/gi, '').trim();
                                 msgText = msgText.replace(/(\r?\n){3,}/g, '\n\n');
-
-                                const { css, cleanText } = extractCssFromText(msgText);
-                                const lower = cleanText.toLowerCase();
-                                
-                                const hasHtml = cleanText && (
-                                  lower.includes('<html') || 
-                                  lower.includes('<div') || 
-                                  lower.includes('<p') || 
-                                  lower.includes('<span') ||
-                                  lower.includes('<table') ||
-                                  lower.includes('<body') || 
-                                  lower.includes('<br') || 
-                                  lower.includes('<a ') ||
-                                  lower.includes('<!doctype html') ||
-                                  /<[a-z][\s\S]*>/i.test(cleanText)
-                                );
-
-                                const hasCss = css.trim().length > 0;
-
-                                if (hasHtml || hasCss) {
-                                  const bodyContent = hasHtml ? cleanText : `<div style="white-space: pre-wrap; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.65;">${cleanText}</div>`;
-                                  
-                                  return (
-                                    <div style={{ border: '1px solid #cbd5e1', borderRadius: '8px', overflow: 'hidden', backgroundColor: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.03)' }}>
-                                      <iframe
-                                        title={`Message Content ${idx}`}
-                                        srcDoc={`
-                                          <!DOCTYPE html>
-                                          <html>
-                                            <head>
-                                              <meta charset="utf-8">
-                                              <style>
-                                                body {
-                                                  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                                                  font-size: 14px;
-                                                  line-height: 1.65;
-                                                  color: #1e293b;
-                                                  margin: 1.1rem;
-                                                  word-wrap: break-word;
-                                                }
-                                                img { max-width: 100%; height: auto; }
-                                                table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; }
-                                                th, td { border: 1px solid #cbd5e1; padding: 6px 10px; font-size: 13px; text-align: left; }
-                                                th { background-color: #f1f5f9; font-weight: 700; }
-                                                a { color: #2563eb; text-decoration: underline; }
-                                                ${css}
-                                              </style>
-                                            </head>
-                                            <body>
-                                              ${bodyContent}
-                                            </body>
-                                          </html>
-                                        `}
-                                        style={{ width: '100%', height: '360px', border: 'none', display: 'block', background: '#ffffff' }}
-                                        sandbox="allow-popups"
-                                      />
-                                    </div>
-                                  );
-                                }
-
-                                const isTabular = lower.includes('sl ') || lower.includes('uom') || lower.includes('qty') || lower.includes('discount') || lower.includes('rate') || lower.includes('make') || /^\s*\d+\s+[a-z]/im.test(cleanText);
-                                const formattedText = autoFormatUnstructuredText(msgText);
-
+                                const { cleanText } = extractCssFromText(msgText);
+                                const looksLikeHtml = /<[a-z][\s\S]*>/i.test(cleanText || '');
                                 return (
-                                  <div 
-                                    style={{ 
-                                      whiteSpace: 'pre-wrap', 
-                                      fontFamily: isTabular ? 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace' : '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', 
-                                      fontSize: isTabular ? '0.84rem' : '0.88rem', 
-                                      lineHeight: '1.7', 
-                                      color: '#0f172a',
-                                      wordBreak: 'break-word',
-                                      backgroundColor: '#f8fafc',
-                                      padding: '1rem 1.15rem',
-                                      borderRadius: '8px',
-                                      border: '1px solid #cbd5e1',
-                                      maxHeight: '450px',
-                                      overflowY: 'auto',
-                                      letterSpacing: isTabular ? '-0.15px' : 'normal'
-                                    }}
-                                  >
-                                    {formattedText}
-                                  </div>
+                                  <EmailHtmlViewer
+                                    html={looksLikeHtml ? cleanText : null}
+                                    text={msgText}
+                                    title={`Message Content ${idx}`}
+                                    height={380}
+                                  />
                                 );
                               })()}
                             </div>
@@ -7009,77 +7273,35 @@ function App() {
                     })}
                   </div>
                 ) : (
-                  /* Standard / Raw View rendering with HTML & CSS Extractor */
-                  (() => {
-                    const bodyText = detailedEmail.body || '';
-                    if (!bodyText.trim()) {
-                      return <div style={{ padding: '1.5rem', color: '#64748b', fontStyle: 'italic' }}>No message content available.</div>;
-                    }
+                  /* Standard / Raw View uses the shared full-fidelity renderer */
+                  <EmailHtmlViewer
+                    html={detailedEmail.body}
+                    text={detailedEmail.body}
+                    title="Rich Email Content"
+                    height={520}
+                  />
+                )}
+              </div>
 
-                    const { css, cleanText } = extractCssFromText(bodyText);
-                    const lower = cleanText.toLowerCase();
-
-                    const hasHtml = (
-                      lower.includes('<html') ||
-                      lower.includes('<div') ||
-                      lower.includes('<p') ||
-                      lower.includes('<span') ||
-                      lower.includes('<table') ||
-                      lower.includes('<body') ||
-                      lower.includes('<br') ||
-                      lower.includes('<a ') ||
-                      lower.includes('<!doctype html') ||
-                      /<[a-z][\s\S]*>/i.test(cleanText)
-                    );
-
-                    const hasCss = css.trim().length > 0;
-
-                    if (hasHtml || hasCss) {
-                      const bodyContent = hasHtml ? cleanText : `<div style="white-space: pre-wrap; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.6;">${cleanText}</div>`;
-                      return (
-                        <div style={{ border: '1px solid #cbd5e1', borderRadius: '10px', overflow: 'hidden', backgroundColor: '#ffffff', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
-                          <iframe
-                            title="Rich Email Content"
-                            srcDoc={`
-                              <!DOCTYPE html>
-                              <html>
-                                <head>
-                                  <meta charset="utf-8">
-                                  <meta name="viewport" content="width=device-width, initial-scale=1">
-                                  <style>
-                                    body {
-                                      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                                      font-size: 14px;
-                                      line-height: 1.6;
-                                      color: #1e293b;
-                                      margin: 1.2rem;
-                                      word-wrap: break-word;
-                                      background-color: #ffffff;
-                                    }
-                                    img { max-width: 100%; height: auto; }
-                                    table { border-collapse: collapse; max-width: 100%; }
-                                    a { color: #2563eb; text-decoration: underline; }
-                                    ${css}
-                                  </style>
-                                </head>
-                                <body>
-                                  ${bodyContent}
-                                </body>
-                              </html>
-                            `}
-                            style={{ width: '100%', height: '520px', border: 'none', display: 'block', background: '#ffffff' }}
-                            sandbox="allow-popups"
-                          />
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div style={{ border: '1px solid #cbd5e1', borderRadius: '10px', padding: '1.25rem', backgroundColor: '#ffffff', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', fontSize: '0.9rem', lineHeight: '1.65', color: '#1e293b', maxHeight: '520px', overflowY: 'auto' }}>
-                        {bodyText}
-                      </div>
-                    );
-                  })()
+              <div id="inline-email-composer">
+                {inlineReply && (
+                  <EmailComposer
+                    key={`inline-${inlineReply.mode}`}
+                    variant="inline"
+                    compose={inlineReply}
+                    onChange={handleInlineChange}
+                    onSend={handleInlineSend}
+                    onSaveDraft={handleInlineSaveDraft}
+                    onDiscard={() => { setInlineReply(null); setInlineStatus(''); }}
+                    onFiles={handleInlineFiles}
+                    onRemoveAttachment={handleInlineRemoveAttachment}
+                    sending={inlineSending}
+                    profileEmail=""
+                    quotaRemaining={0}
+                  />
+                )}
+                {inlineStatus && (
+                  <div className="inline-compose-status">{inlineStatus}</div>
                 )}
               </div>
 
@@ -7089,11 +7311,11 @@ function App() {
                 if (!links || links.length === 0) return null;
 
                 return (
-                  <div style={{ backgroundColor: '#ffffff', borderRadius: '10px', border: '1px solid #e2e8f0', padding: '1.15rem', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
+                  <div style={{ backgroundColor: '#ffffff', borderRadius: '4px', border: '1px solid #e2e8f0', padding: '1.15rem', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
                       <div style={{ fontSize: '0.85rem', color: '#0f172a', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                         <ExternalLink size={15} color="#2563eb" />
-                        🔗 Extracted Email Links ({links.length})
+                        ðŸ”— Extracted Email Links ({links.length})
                       </div>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '220px', overflowY: 'auto' }}>
@@ -7115,7 +7337,7 @@ function App() {
                               setTimeout(() => setCopyFeedbackIdx(null), 2000);
                             }}
                           >
-                            {copyFeedbackIdx === `inspector_${idx}` ? '✓ Copied' : '📋 Copy'}
+                            {copyFeedbackIdx === `inspector_${idx}` ? 'âœ“ Copied' : 'ðŸ“‹ Copy'}
                           </button>
                         </div>
                       ))}
