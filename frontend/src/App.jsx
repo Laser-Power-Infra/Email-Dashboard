@@ -3130,7 +3130,7 @@ function App() {
           </div>
         </header>
 
-        {status.aiEngine && status.aiEngine.status && status.aiEngine.status !== 'ok' && status.aiEngine.status !== 'unknown' && (
+        {status.aiEngine && status.aiEngine.status && status.aiEngine.status !== 'ok' && status.aiEngine.status !== 'unknown' && status.aiEngine.reachable !== false && (
           <div className="ai-engine-banner" role="alert">
             <AlertCircle size={16} />
             <div style={{ flex: 1 }}>
@@ -3614,7 +3614,7 @@ function App() {
                         <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                           {status.openaiKey 
                             ? `${status.aiProvider ? (status.aiProvider.charAt(0).toUpperCase() + status.aiProvider.slice(1)) : 'AI'} active (${status.aiModel || ''})` 
-                            : (status.aiEngine && status.aiEngine.error
+                            : (status.aiEngine && status.aiEngine.error && status.aiEngine.reachable !== false
                                 ? `Offline, using regex fallback: ${status.aiEngine.error}`
                                 : 'AI offline, using regex fallback')}
                         </div>
@@ -3962,15 +3962,15 @@ function App() {
                   <div className="config-value-wrapper">
                     <div className={`config-status-dot ${status.openaiKey ? 'success' : 'warn'}`}></div>
                     <div>
-                      <div style={{ fontWeight: 600 }}>{status.openaiKey ? 'Configured & Active' : (status.aiEngine && status.aiEngine.status === 'down' ? 'Offline' : 'Not Available')}</div>
+                      <div style={{ fontWeight: 600 }}>{status.openaiKey ? 'Configured & Active' : (status.aiEngine && status.aiEngine.reachable === false ? 'Not Installed' : (status.aiEngine && status.aiEngine.status === 'down' ? 'Offline' : 'Not Available'))}</div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                         {status.openaiKey ? `Active Model: ${status.aiModel || ''}` : 'Regex Fallback Active'}
                       </div>
                       {status.aiEngine && (
                         <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                          Ollama: {status.aiEngine.url || 'not configured'} · model {status.aiEngine.model || '?'} · {status.aiEngine.status}
+                          Ollama: {status.aiEngine.url || 'not configured'} · model {status.aiEngine.model || '?'} · {status.aiEngine.reachable === false ? 'not installed' : status.aiEngine.status}
                           {status.aiEngine.lastCheckedAt ? ` · checked ${formatDateTime(status.aiEngine.lastCheckedAt)}` : ''}
-                          {status.aiEngine.error ? <div>{status.aiEngine.error}</div> : null}
+                          {status.aiEngine.error && status.aiEngine.reachable !== false ? <div>{status.aiEngine.error}</div> : null}
                           {(status.aiEngine.configWarnings || []).map((w, i) => <div key={i}>⚠ {w}</div>)}
                         </div>
                       )}
