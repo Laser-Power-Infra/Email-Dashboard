@@ -216,3 +216,49 @@
     margin: 8px;
   }
 }
+
+/* To / Cc / Bcc address suggestions (RecipientInput) */
+.recipient-suggest {
+  position: fixed;
+  z-index: 3000;
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md, 8px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+}
+
+.recipient-suggest li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  cursor: pointer;
+  color: var(--text-main);
+}
+
+.recipient-suggest li.is-active {
+  background: var(--bg-card-hover);
+}
+
+.recipient-suggest .recipient-suggest-status {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+  color: var(--text-muted);
+}
+
+.recipient-suggest-name {
+  font-weight: 500;
+}
+
+.recipient-suggest-email {
+  color: var(--text-muted);
+  font-size: 11px;
+}

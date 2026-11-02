@@ -43,6 +43,7 @@ import {
 import Mailbox from './Mailbox';
 import EmailHtmlViewer from './EmailHtmlViewer';
 import EmailComposer from './EmailComposer';
+import RecipientInput from './RecipientInput';
 import { formatSheetDate, pluralize, getTenderTitle, getTenderNumber } from './tenderFormat';
 
 function parseEmailThread(body, defaultSender = 'Sender') {
@@ -515,7 +516,7 @@ function SearchableMultiSelectDropdown({ label, icon, options = [], selectedValu
         ) : (
           <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>All</span>
         )}
-        <span style={{ fontSize: '0.65rem', marginLeft: '0.25rem' }}>{isOpen ? 'â–²' : 'â–¼'}</span>
+        <span style={{ fontSize: '0.65rem', marginLeft: '0.25rem' }}>{isOpen ? '▲' : '▼'}</span>
       </button>
 
       {isOpen && (
@@ -1501,7 +1502,7 @@ function App() {
 
           // Show AI Smart-Label Propagation notification
           if (data.propagatedCount && data.propagatedCount > 0) {
-            const subjectsList = data.propagatedEmails.map(e => `â€¢ ${e.subject}`).slice(0, 10).join('\n');
+            const subjectsList = data.propagatedEmails.map(e => `• ${e.subject}`).slice(0, 10).join('\n');
             const limitMsg = data.propagatedEmails.length > 10 ? `\n...and ${data.propagatedEmails.length - 10} more.` : '';
             alert(`AI Smart-Label Propagation Success!\n\n` +
                   `The AI successfully identified and auto-labeled ${data.propagatedCount} other related emails in your database:\n\n` +
@@ -2883,7 +2884,7 @@ function App() {
       ? <span style={{ marginRight: '0.2rem', opacity: 0.8, fontSize: '0.8rem', fontWeight: 'bold' }}>#</span>
       : isOutsider
       ? null
-      : <span style={{ marginRight: '0.35rem', fontSize: '0.9rem', lineHeight: 1, color: actualColor }}>â€¢</span>;
+      : <span style={{ marginRight: '0.35rem', fontSize: '0.9rem', lineHeight: 1, color: actualColor }}>•</span>;
 
     return (
       <span className={isCodeword ? 'codeword-badge' : 'company-badge'} style={badgeStyle}>
@@ -2950,7 +2951,7 @@ function App() {
             onClick={() => setSidebarCollapsed(prev => !prev)}
             title={sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
           >
-            {sidebarCollapsed ? 'âž”' : 'â—€'}
+            {sidebarCollapsed ? '➔' : '◀'}
           </button>
         </div>
 
@@ -3197,7 +3198,7 @@ function App() {
                   )}
                   
                   {(subStartDate || subEndDate || subIntervalValue) && (
-                    <button className="btn-clear" onClick={handleClearSubFilter}>âœ•</button>
+                    <button className="btn-clear" onClick={handleClearSubFilter}>✕</button>
                   )}
                 </div>
               </div>
@@ -3268,7 +3269,7 @@ function App() {
                   )}
 
                   {(recStartDate || recEndDate || recIntervalValue) && (
-                    <button className="btn-clear" onClick={handleClearRecFilter}>âœ•</button>
+                    <button className="btn-clear" onClick={handleClearRecFilter}>✕</button>
                   )}
                 </div>
               </div>
@@ -3285,7 +3286,7 @@ function App() {
               </div>
             </div>
 
-            {/* â”€â”€ Company & Codeword Filter Bars â”€â”€ */}
+            {/* ── Company & Codeword Filter Bars ── */}
             <div className="company-codeword-filter-bar">
               {/* Company row */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -3324,7 +3325,7 @@ function App() {
                 </div>
               </div>
 
-              {/* Codeword row â€” shown when codewords exist */}
+              {/* Codeword row — shown when codewords exist */}
               {codewordsList.length > 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                   <span style={{
@@ -3356,7 +3357,7 @@ function App() {
                           className={`company-filter-btn ${isActive ? 'active' : ''}`}
                           style={btnStyle}
                           onClick={() => setActiveCwFilter(isActive ? '' : (cw ? cw.codeword : ''))}
-                          title={cw ? `${cw.company} Â· ${cw.category} Â· ${cw.sub_category}` : 'Show all'}
+                          title={cw ? `${cw.company} · ${cw.category} · ${cw.sub_category}` : 'Show all'}
                         >
                           {label}
                         </button>
@@ -3653,8 +3654,8 @@ function App() {
                         >
                           Date
                           {tenderDateSort
-                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(99,102,241,0.25)', border:'1.5px solid rgba(99,102,241,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#818cf8', marginLeft:'0.25rem' }}>{tenderDateSort === 'asc' ? 'â†‘' : 'â†“'}</span>
-                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>â†•</span>
+                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(99,102,241,0.25)', border:'1.5px solid rgba(99,102,241,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#818cf8', marginLeft:'0.25rem' }}>{tenderDateSort === 'asc' ? '↑' : '↓'}</span>
+                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>↕</span>
                           }
                         </button>
                       </th>
@@ -3675,8 +3676,8 @@ function App() {
                         >
                           Submission Date
                           {submissionDateSort
-                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(16,185,129,0.25)', border:'1.5px solid rgba(16,185,129,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#34d399', marginLeft:'0.25rem' }}>{submissionDateSort === 'asc' ? 'â†‘' : 'â†“'}</span>
-                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>â†•</span>
+                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(16,185,129,0.25)', border:'1.5px solid rgba(16,185,129,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#34d399', marginLeft:'0.25rem' }}>{submissionDateSort === 'asc' ? '↑' : '↓'}</span>
+                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>↕</span>
                           }
                         </button>
                       </th>
@@ -3697,8 +3698,8 @@ function App() {
                         >
                           Extracted Deadline
                           {deadlineSort
-                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(245,158,11,0.25)', border:'1.5px solid rgba(245,158,11,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#fbbf24', marginLeft:'0.25rem' }}>{deadlineSort === 'asc' ? 'â†‘' : 'â†“'}</span>
-                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>â†•</span>
+                            ? <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(245,158,11,0.25)', border:'1.5px solid rgba(245,158,11,0.5)', fontSize:'0.75rem', fontWeight:800, color:'#fbbf24', marginLeft:'0.25rem' }}>{deadlineSort === 'asc' ? '↑' : '↓'}</span>
+                            : <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:'1.2rem', height:'1.2rem', borderRadius:'4px', background:'rgba(255,255,255,0.05)', border:'1px dashed rgba(255,255,255,0.15)', fontSize:'0.75rem', color:'rgba(255,255,255,0.25)', marginLeft:'0.25rem' }}>↕</span>
                           }
                         </button>
                       </th>
@@ -4117,7 +4118,7 @@ function App() {
                 <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => handleFilePreview(e.target.files[0])} style={{ color: 'var(--text-main)' }} />
                 {uploadPreview && (
                   <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                    <p>File: <strong>{uploadPreview.fileName}</strong> â€” {uploadPreview.total} sender(s) detected</p>
+                    <p>File: <strong>{uploadPreview.fileName}</strong> — {uploadPreview.total} sender(s) detected</p>
                     {uploadPreview.sample.length > 0 && (
                       <div><p>Preview (first {uploadPreview.sample.length}):</p>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
@@ -4137,7 +4138,7 @@ function App() {
                         <button key={c} className={`company-toggle-btn ${uploadCompanies.includes(c) ? 'selected' : ''}`}
                           style={uploadCompanies.includes(c) ? { backgroundColor: COMPANY_COLORS[c], color: '#fff', borderColor: COMPANY_COLORS[c] } : { borderColor: COMPANY_COLORS[c], color: COMPANY_COLORS[c] }}
                           onClick={() => setUploadCompanies(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c])}>
-                          {uploadCompanies.includes(c) ? 'âœ“ ' : ''}{c}
+                          {uploadCompanies.includes(c) ? '✓ ' : ''}{c}
                         </button>
                       ))}
                     </div>
@@ -4176,7 +4177,7 @@ function App() {
                     <button key={c} className={`company-toggle-btn ${newSenderCompanies.includes(c) ? 'selected' : ''}`}
                       style={newSenderCompanies.includes(c) ? { backgroundColor: COMPANY_COLORS[c], color: '#fff', borderColor: COMPANY_COLORS[c] } : { borderColor: COMPANY_COLORS[c], color: COMPANY_COLORS[c] }}
                       onClick={() => setNewSenderCompanies(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c])}>
-                      {newSenderCompanies.includes(c) ? 'âœ“ ' : ''}{c}
+                      {newSenderCompanies.includes(c) ? '✓ ' : ''}{c}
                     </button>
                   ))}
                 </div>
@@ -4291,7 +4292,7 @@ function App() {
                         <button key={c} className={`company-toggle-btn ${editMappingCompanies.includes(c) ? 'selected' : ''}`}
                           style={editMappingCompanies.includes(c) ? { backgroundColor: COMPANY_COLORS[c], color: '#fff', borderColor: COMPANY_COLORS[c] } : { borderColor: COMPANY_COLORS[c], color: COMPANY_COLORS[c] }}
                           onClick={() => setEditMappingCompanies(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c])}>
-                          {editMappingCompanies.includes(c) ? 'âœ“ ' : ''}{c}
+                          {editMappingCompanies.includes(c) ? '✓ ' : ''}{c}
                         </button>
                       ))}
                     </div>
@@ -4403,7 +4404,7 @@ function App() {
                       }}
                     >
                       <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
-                        <span style={{ color: '#7c3aed', fontWeight: 'bold', fontSize: '0.9rem' }}>â€¢</span>
+                        <span style={{ color: '#7c3aed', fontWeight: 'bold', fontSize: '0.9rem' }}>•</span>
                         <span style={{ color: 'var(--text-main)', fontSize: '0.9rem', lineHeight: '1.4' }}>{rule.rule}</span>
                       </div>
                       <button 
@@ -4467,7 +4468,7 @@ function App() {
                     <div style={{ marginTop: '0.75rem', maxHeight: '150px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                       {remapResult.deletedMatches.map((dm, idx) => (
                         <div key={idx} style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.4rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
-                          ðŸ—‘ï¸ <strong>Tender:</strong> {dm.docketNo} â€” <strong>Subject:</strong> {dm.subject} <br/>
+                          🗑️ <strong>Tender:</strong> {dm.docketNo} — <strong>Subject:</strong> {dm.subject} <br/>
                           <span style={{ color: '#ef4444' }}>Reason: {dm.reason}</span>
                         </div>
                       ))}
@@ -4614,7 +4615,7 @@ function App() {
                         <button
                           className="sort-th-btn"
                           onClick={() => setDateSortOrder(o => o === 'asc' ? 'desc' : 'asc')}
-                          title={dateSortOrder === 'asc' ? 'Oldest first â€” click for Newest' : 'Newest first â€” click for Oldest'}
+                          title={dateSortOrder === 'asc' ? 'Oldest first — click for Newest' : 'Newest first — click for Oldest'}
                         >
                           Date Received
                           <span style={{
@@ -4631,7 +4632,7 @@ function App() {
                             color: '#818cf8',
                             marginLeft: '0.25rem',
                             transition: 'all 0.2s ease'
-                          }}>{dateSortOrder === 'asc' ? 'â†‘' : 'â†“'}</span>
+                          }}>{dateSortOrder === 'asc' ? '↑' : '↓'}</span>
                         </button>
                       </th>
                       <th>Subject</th>
@@ -4679,7 +4680,7 @@ function App() {
                             </div>
                           </td>
                           <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={mergeEmailLists(email.to_details, email.cc_details)}>
-                            {mergeEmailLists(email.to_details, email.cc_details) || 'â€”'}
+                            {mergeEmailLists(email.to_details, email.cc_details) || '—'}
                           </td>
                           <td style={{ fontSize: '0.9rem', color: 'var(--text-main)', maxWidth: '280px', wordBreak: 'break-word' }}>
                             <div style={{ fontWeight: 600 }}>{tenderLabel}</div>
@@ -4785,7 +4786,7 @@ function App() {
                       setSelectedLabelFilter('');
                     }}
                   >
-                    Reset All Filters âœ•
+                    Reset All Filters ✕
                   </button>
                 )}
               </div>
@@ -4815,7 +4816,7 @@ function App() {
                           setSelectedCategoryFilter(next);
                         }}
                       >
-                        âœ•
+                        ✕
                       </span>
                     </span>
                   ))}
@@ -4840,7 +4841,7 @@ function App() {
                           setSelectedSubCategoryFilter(next);
                         }}
                       >
-                        âœ•
+                        ✕
                       </span>
                     </span>
                   ))}
@@ -4865,7 +4866,7 @@ function App() {
                           setSelectedLabelFilter(next);
                         }}
                       >
-                        âœ•
+                        ✕
                       </span>
                     </span>
                   ))}
@@ -4901,7 +4902,7 @@ function App() {
                       onClick={() => setAllEmailsSearch('')}
                       style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', marginLeft: '-1.75rem', zIndex: 5 }}
                     >
-                      âœ•
+                      ✕
                     </button>
                   )}
                 </div>
@@ -4930,7 +4931,7 @@ function App() {
                       onClick={() => setRecipientSearch('')}
                       style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', marginLeft: '-1.75rem', zIndex: 5 }}
                     >
-                      âœ•
+                      ✕
                     </button>
                   )}
                 </div>
@@ -4985,7 +4986,7 @@ function App() {
                         <button
                           className="sort-th-btn"
                           onClick={() => setDateSortOrder(o => o === 'asc' ? 'desc' : 'asc')}
-                          title={dateSortOrder === 'asc' ? 'Oldest first â€” click for Newest' : 'Newest first â€” click for Oldest'}
+                          title={dateSortOrder === 'asc' ? 'Oldest first — click for Newest' : 'Newest first — click for Oldest'}
                         >
                           Date Received
                           <span style={{
@@ -5002,7 +5003,7 @@ function App() {
                             color: '#818cf8',
                             marginLeft: '0.25rem',
                             transition: 'all 0.2s ease'
-                          }}>{dateSortOrder === 'asc' ? 'â†‘' : 'â†“'}</span>
+                          }}>{dateSortOrder === 'asc' ? '↑' : '↓'}</span>
                         </button>
                       </th>
                       <th>Subject & Preview</th>
@@ -5105,7 +5106,7 @@ function App() {
                           </div>
                         </td>
                         <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={mergeEmailLists(email.to_details, email.cc_details)}>
-                          {mergeEmailLists(email.to_details, email.cc_details) || 'â€”'}
+                          {mergeEmailLists(email.to_details, email.cc_details) || '—'}
                         </td>
                         <td>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', alignItems: 'flex-start' }}>
@@ -5153,7 +5154,7 @@ function App() {
                                       style={{ cursor: 'pointer', fontWeight: 'bold', fontSize: '0.65rem' }} 
                                       onClick={() => handleRemoveLabel(email, label)}
                                     >
-                                      âœ•
+                                      ✕
                                     </span>
                                   </span>
                                 );
@@ -5323,7 +5324,7 @@ function App() {
                   title="View emails received by export@laserpowerinfra.com"
                 >
                   <Mail size={15} />
-                  <span>ðŸ“¥ Receiving Mails</span>
+                  <span>📥 Receiving Mails</span>
                   <span className="export-count-pill">{exportRecvCount}</span>
                 </button>
                 <button
@@ -5333,7 +5334,7 @@ function App() {
                   title="View emails sent from export@laserpowerinfra.com"
                 >
                   <Send size={15} />
-                  <span>ðŸ“¤ Sending Mails</span>
+                  <span>📤 Sending Mails</span>
                   <span className="export-count-pill">{exportSentCount}</span>
                 </button>
               </div>
@@ -5356,7 +5357,7 @@ function App() {
                       onClick={() => setExportSearch('')}
                       style={{ position: 'absolute', right: '0.75rem', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
                     >
-                      âœ•
+                      ✕
                     </button>
                   )}
                 </div>
@@ -5423,7 +5424,7 @@ function App() {
                       <th style={{ width: '170px', whiteSpace: 'nowrap' }}>
                         <span>Date Received</span>
                         <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-primary)', marginLeft: '0.2rem' }}>
-                          {exportDateSort === 'asc' ? 'â†‘' : 'â†“'}
+                          {exportDateSort === 'asc' ? '↑' : '↓'}
                         </span>
                       </th>
                       <th>Subject & Preview</th>
@@ -5460,16 +5461,16 @@ function App() {
                 <table className="tenders-table" style={{ width: '100%' }}>
                   <thead>
                     <tr>
-                      {/* Header 1: Date Received â†“ */}
+                      {/* Header 1: Date Received ↓ */}
                       <th style={{ width: '170px', whiteSpace: 'nowrap' }}>
                         <button
                           className="sort-th-btn"
                           onClick={() => setExportDateSort(o => o === 'asc' ? 'desc' : 'asc')}
-                          title={exportDateSort === 'asc' ? 'Oldest first â€” click for Newest' : 'Newest first â€” click for Oldest'}
+                          title={exportDateSort === 'asc' ? 'Oldest first — click for Newest' : 'Newest first — click for Oldest'}
                         >
                           <span>Date Received</span>
                           <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-primary)', marginLeft: '0.2rem' }}>
-                            {exportDateSort === 'asc' ? 'â†‘' : 'â†“'}
+                            {exportDateSort === 'asc' ? '↑' : '↓'}
                           </span>
                         </button>
                       </th>
@@ -5684,7 +5685,7 @@ function App() {
                                 </div>
                               )}
                               {!email.to_details && !email.cc_details && (
-                                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>â€”</span>
+                                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
                               )}
                             </div>
                           </td>
@@ -5789,7 +5790,7 @@ function App() {
                 <h2>{getTenderTitle(selectedTender)}</h2>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Date: {selectedTender.docketNo || 'N/A'} | Client: {selectedTender.client}</div>
               </div>
-              <button className="modal-close" onClick={() => setSelectedTender(null)}>âœ•</button>
+              <button className="modal-close" onClick={() => setSelectedTender(null)}>✕</button>
             </div>
 
             <div className="modal-body">
@@ -5901,7 +5902,7 @@ function App() {
                         {email.summary ? (
                           <div className="email-summary" onClick={(e) => e.stopPropagation()} style={{ marginTop: '0.75rem', marginBottom: '0.5rem' }}>
                             <div className="email-summary-header">
-                              <span>âœ¨ AI Summary</span>
+                              <span>✨ AI Summary</span>
                               <button
                                 className="btn btn-secondary"
                                 style={{ padding: '0.15rem 0.4rem', fontSize: '0.7rem', height: 'auto', borderRadius: '4px' }}
@@ -5921,7 +5922,7 @@ function App() {
                               onClick={(e) => { e.stopPropagation(); handleManualSummarize(email.id); }}
                               disabled={summarizing}
                             >
-                              âœ¨ Generate AI Summary
+                              ✨ Generate AI Summary
                             </button>
                           </div>
                         )}
@@ -6135,7 +6136,7 @@ function App() {
                       transition: 'all 0.15s ease'
                     }}
                   >
-                    âœ•
+                    ✕
                   </button>
                 </div>
               </div>
@@ -6147,11 +6148,11 @@ function App() {
               {/* LEFT COLUMN: EMAIL THREAD & OCR */}
               <div className="email-modal-left-pane-light" style={{ flex: '1 1 62%', minWidth: 0, padding: '1.1rem 1.4rem', overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', gap: '0.9rem', borderRight: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
                 
-                {/* âœ¨ AI Summary Card */}
+                {/* ✨ AI Summary Card */}
                 <div style={{ padding: '0.9rem 1.15rem', backgroundColor: '#faf5ff', borderRadius: '4px', border: '1px solid #e9d5ff', boxShadow: '0 1px 3px rgba(124, 58, 237, 0.05)' }}>
                   <div style={{ marginBottom: '0.45rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontWeight: 700, fontSize: '0.85rem', color: '#7c3aed', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                      âœ¨ AI Executive Summary
+                      ✨ AI Executive Summary
                     </span>
                     {selectedEmail.summary && (
                       <button
@@ -6159,7 +6160,7 @@ function App() {
                         onClick={() => handleManualSummarize(selectedEmail.id)}
                         disabled={summarizing}
                       >
-                        {summarizing ? 'Regenerating...' : 'ðŸ”„ Regenerate'}
+                        {summarizing ? 'Regenerating...' : '🔄 Regenerate'}
                       </button>
                     )}
                   </div>
@@ -6172,7 +6173,7 @@ function App() {
                         onClick={() => handleManualSummarize(selectedEmail.id)}
                         disabled={summarizing}
                       >
-                        {summarizing ? 'Generating Summary...' : 'âœ¨ Generate AI Summary'}
+                        {summarizing ? 'Generating Summary...' : '✨ Generate AI Summary'}
                       </button>
                     </div>
                   )}
@@ -6192,7 +6193,7 @@ function App() {
                         return (
                           <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', padding: '0.2rem 0.55rem', fontSize: '0.75rem', borderRadius: '6px', backgroundColor: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0', fontWeight: 500 }}>
                             {label}
-                            <span style={{ cursor: 'pointer', fontWeight: 'bold', marginLeft: '0.2rem' }} onClick={() => handleRemoveLabel(selectedEmail, label)}>âœ•</span>
+                            <span style={{ cursor: 'pointer', fontWeight: 'bold', marginLeft: '0.2rem' }} onClick={() => handleRemoveLabel(selectedEmail, label)}>✕</span>
                           </span>
                         );
                       })
@@ -6208,7 +6209,7 @@ function App() {
                         <button key={lbl} 
                           style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', fontSize: '0.72rem', cursor: 'pointer', backgroundColor: isAssigned ? '#6366f1' : '#f1f5f9', color: isAssigned ? '#ffffff' : '#475569', border: '1px solid ' + (isAssigned ? '#6366f1' : '#cbd5e1'), fontWeight: 500 }}
                           onClick={() => isAssigned ? handleRemoveLabel(selectedEmail, lbl) : handleAddLabel(selectedEmail, lbl)}>
-                          {isAssigned ? 'âœ“' : '+'} {lbl}
+                          {isAssigned ? '✓' : '+'} {lbl}
                         </button>
                       );
                     })}
@@ -6237,7 +6238,7 @@ function App() {
                         )}
 
                         {messagesToRender.map((msg, idx) => {
-                          const stepLabel = idx === 0 ? 'ðŸ“© Latest Email' : (idx === messagesToRender.length - 1 ? 'âœ‰ï¸ Original Inquiry' : `ðŸ’¬ Reply #${messagesToRender.length - idx}`);
+                          const stepLabel = idx === 0 ? '📩 Latest Email' : (idx === messagesToRender.length - 1 ? '✉️ Original Inquiry' : `💬 Reply #${messagesToRender.length - idx}`);
                           const badgeBg = idx === 0 ? '#eff6ff' : '#f8fafc';
                           const badgeColor = idx === 0 ? '#1d4ed8' : '#475569';
                           const badgeBorder = idx === 0 ? '#bfdbfe' : '#cbd5e1';
@@ -6257,7 +6258,7 @@ function App() {
                                         {stepLabel}
                                       </span>
                                     </div>
-                                    {msg.date && <div style={{ fontSize: '0.73rem', color: '#64748b', marginTop: '0.15rem' }}>ðŸ“… {msg.date}</div>}
+                                    {msg.date && <div style={{ fontSize: '0.73rem', color: '#64748b', marginTop: '0.15rem' }}>📅 {msg.date}</div>}
                                   </div>
                                 </div>
                               </div>
@@ -6303,7 +6304,7 @@ function App() {
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
                         <div style={{ fontSize: '0.85rem', color: '#0f172a', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                           <Paperclip size={15} color="#4f46e5" />
-                          ðŸ“„ Extracted PDF & Attachment Text (OCR)
+                          📄 Extracted PDF & Attachment Text (OCR)
                         </div>
                         <button style={{ padding: '0.22rem 0.6rem', fontSize: '0.72rem', borderRadius: '6px', cursor: 'pointer', border: '1px solid #cbd5e1', backgroundColor: '#f8fafc', color: copySuccess ? '#15803d' : '#475569', fontWeight: 600 }}
                           onClick={() => {
@@ -6311,7 +6312,7 @@ function App() {
                             setCopySuccess(true);
                             setTimeout(() => setCopySuccess(false), 2000);
                           }}>
-                          {copySuccess ? 'âœ“ Copied!' : 'ðŸ“‹ Copy OCR Text'}
+                          {copySuccess ? '✓ Copied!' : '📋 Copy OCR Text'}
                         </button>
                       </div>
                       <div style={{ maxHeight: '240px', overflowY: 'auto', fontSize: '0.82rem', lineHeight: '1.6', backgroundColor: '#f8fafc', padding: '0.9rem', borderRadius: '8px', border: '1px solid #e2e8f0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#334155' }}>
@@ -6342,7 +6343,7 @@ function App() {
                     return (
                       <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
                         <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span>ðŸŽ¯ Tender Match Info</span>
+                          <span>🎯 Tender Match Info</span>
                           <span style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem', borderRadius: '4px', backgroundColor: selectedEmail.confidence === 'HIGH' ? '#ecfdf5' : '#fffbeb', color: selectedEmail.confidence === 'HIGH' ? '#065f46' : '#b45309', border: selectedEmail.confidence === 'HIGH' ? '1px solid #a7f3d0' : '1px solid #fde68a', fontWeight: 700 }}>
                             {selectedEmail.confidence || 'HIGH'} Confidence
                           </span>
@@ -6357,7 +6358,7 @@ function App() {
                         {matchInfo && (
                           <div style={{ marginTop: '0.65rem', paddingTop: '0.55rem', borderTop: '1px solid #e2e8f0' }}>
                             <div style={{ fontSize: '0.73rem', fontWeight: 700, color: '#475569', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem', flexWrap: 'wrap' }}>
-                              ðŸ“ Matched In:
+                              📍 Matched In:
                               <span style={{ color: '#1e40af', fontWeight: 700, backgroundColor: '#eff6ff', padding: '0.15rem 0.45rem', borderRadius: '4px', border: '1px solid #bfdbfe' }}>
                                 {matchInfo.location}
                               </span>
@@ -6379,11 +6380,11 @@ function App() {
                             <div style={{ display: 'flex', gap: '0.3rem' }}>
                               <button style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', backgroundColor: '#ecfdf5', color: '#065f46', border: '1px solid #a7f3d0', borderRadius: '4px', cursor: 'pointer', fontWeight: 600 }}
                                 onClick={() => { setShowFeedbackForm(true); setFeedbackWasCorrect(true); }}>
-                                âœ“ Correct
+                                ✓ Correct
                               </button>
                               <button style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: '4px', cursor: 'pointer', fontWeight: 600 }}
                                 onClick={() => { setShowFeedbackForm(true); setFeedbackWasCorrect(false); }}>
-                                âœ• Wrong
+                                ✕ Wrong
                               </button>
                             </div>
                           )}
@@ -6429,7 +6430,7 @@ function App() {
                   {/* 2. COMPANY & CATEGORY INFO */}
                   <div style={{ padding: '0.85rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
                     <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-                      ðŸ¢ Organization & Category
+                      🏢 Organization & Category
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.8rem' }}>
                       <div><span style={{ color: '#64748b' }}>Company:</span> <strong style={{ color: '#0f172a' }}>{selectedEmail.company || 'Laser Power & Infra'}</strong></div>
@@ -6504,7 +6505,7 @@ function App() {
                                     setTimeout(() => setCopyFeedbackIdx(null), 1500);
                                   }}
                                 >
-                                  {copyFeedbackIdx === idx ? 'âœ“ Copied' : 'Copy'}
+                                  {copyFeedbackIdx === idx ? '✓ Copied' : 'Copy'}
                                 </button>
                               </div>
                             ))}
@@ -6542,7 +6543,7 @@ function App() {
                   Tender: {getTenderTitle(replyTender)} (Docket: {replyTender.docketNo})
                 </div>
               </div>
-              <button className="modal-close" onClick={() => setReplyTender(null)}>âœ•</button>
+              <button className="modal-close" onClick={() => setReplyTender(null)}>✕</button>
             </div>
 
             <div className="modal-body" style={{ padding: '1.75rem', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -6575,12 +6576,11 @@ function App() {
                   {/* Recipient Input */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
                     <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)' }}>RECIPIENT (TO):</label>
-                    <input
-                      type="email"
+                    <RecipientInput
                       className="search-input"
                       style={{ padding: '0.55rem 1rem', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)', borderRadius: '8px' }}
-                      value={replyDraft.to}
-                      onChange={(e) => setReplyDraft(prev => ({ ...prev, to: e.target.value }))}
+                      value={replyDraft.to || ''}
+                      onChange={(to) => setReplyDraft(prev => ({ ...prev, to }))}
                       placeholder="recipient@example.com"
                     />
                   </div>
@@ -6943,7 +6943,7 @@ function App() {
                     )}
                   </>
                 )}
-                <button className="modal-close" onClick={() => setEmailDetailModalOpen(false)}>âœ•</button>
+                <button className="modal-close" onClick={() => setEmailDetailModalOpen(false)}>✕</button>
               </div>
             </div>
 
@@ -7005,7 +7005,7 @@ function App() {
                       return (
                         <span key={label} className="badge badge-success" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}>
                           {label}
-                          <span style={{ cursor: 'pointer', fontWeight: 'bold' }} onClick={() => handleRemoveLabel(detailedEmail, label)}>âœ•</span>
+                          <span style={{ cursor: 'pointer', fontWeight: 'bold' }} onClick={() => handleRemoveLabel(detailedEmail, label)}>✕</span>
                         </span>
                       );
                     })
@@ -7049,7 +7049,7 @@ function App() {
                             }
                           }}
                         >
-                          {isAssigned ? 'âœ“' : '+'} {lbl}
+                          {isAssigned ? '✓' : '+'} {lbl}
                         </button>
                       );
                     })}
@@ -7123,8 +7123,8 @@ function App() {
                       const isExpanded = expandedThreadMessages[idx] !== false;
                       const msgSender = msg.sender || msg.defaultSender || detailedEmail.sender || 'Sender';
                       const stepLabel = threadMessages.length > 1
-                        ? (idx === 0 ? 'ðŸ“© Latest Email' : (idx === threadMessages.length - 1 ? 'âœ‰ï¸ Original Inquiry' : `ðŸ’¬ Reply #${threadMessages.length - idx}`))
-                        : 'ðŸ“© Main Message';
+                        ? (idx === 0 ? '📩 Latest Email' : (idx === threadMessages.length - 1 ? '✉️ Original Inquiry' : `💬 Reply #${threadMessages.length - idx}`))
+                        : '📩 Main Message';
 
                       return (
                         <div 
@@ -7182,7 +7182,7 @@ function App() {
                                 </div>
                                 {(msg.date || detailedEmail.date || detailedEmail.date_received) && (
                                   <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
-                                    ðŸ“… {msg.date || formatDateTime(detailedEmail.date || detailedEmail.date_received)}
+                                    📅 {msg.date || formatDateTime(detailedEmail.date || detailedEmail.date_received)}
                                   </div>
                                 )}
                               </div>
@@ -7283,7 +7283,7 @@ function App() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
                       <div style={{ fontSize: '0.85rem', color: '#0f172a', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                         <ExternalLink size={15} color="#2563eb" />
-                        ðŸ”— Extracted Email Links ({links.length})
+                        🔗 Extracted Email Links ({links.length})
                       </div>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '220px', overflowY: 'auto' }}>
@@ -7305,7 +7305,7 @@ function App() {
                               setTimeout(() => setCopyFeedbackIdx(null), 2000);
                             }}
                           >
-                            {copyFeedbackIdx === `inspector_${idx}` ? 'âœ“ Copied' : 'ðŸ“‹ Copy'}
+                            {copyFeedbackIdx === `inspector_${idx}` ? '✓ Copied' : '📋 Copy'}
                           </button>
                         </div>
                       ))}

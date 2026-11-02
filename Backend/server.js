@@ -43,6 +43,7 @@ const { extractTenderTokens, checkMatch, checkMatchNormalized, checkMatchCompile
 const { shouldUseFullSync } = require('./syncStrategy');
 const { syncDocketQuotationMails } = require('./docketQuotationSync');
 const gmailMailbox = require('./gmailMailbox');
+const { rankContacts } = require('./contactSuggest');
 const { AiHealthMonitor, resolveOllamaConfig, isConnectionError } = require('./aiHealth');
 const { prepareTendersForMatching, findBestTenderForThread } = require('./tenderMatchSelector');
 
@@ -5189,6 +5190,35 @@ app.get('/api/sender-companies', async (req, res) => {
   } catch (err) {
     console.error('[Companies] Failed:', err.message);
     res.status(500).json({ error: err.message });
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
+});
+
+// Address suggestions for the To / Cc / Bcc fields, taken from existing mails.
+app.get('/api/contacts/suggest', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const limit = Math.min(Math.max(Number(req.query.limit) || 8, 1), 20);
+  const exclude = String(req.query.exclude || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (q.length < 2) return res.json({ success: true, contacts: [] });
+
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const table = process.env.DB_TABLE || 'threads';
+    const colSender = process.env.DB_COL_SENDER || 'sender';
+    const colDate = process.env.DB_COL_DATE || 'date';
+    const like = `%${q}%`;
+    const [rows] = await conn.execute(
+      `SELECT ${colSender} AS sender, to_details, cc_details FROM \`${table}\`
+       WHERE ${colSender} LIKE ? OR to_details LIKE ? OR cc_details LIKE ?
+       ORDER BY ${colDate} DESC LIMIT 300`,
+      [like, like, like]
+    );
+    res.json({ success: true, contacts: rankContacts(rows, q, { limit, exclude }) });
+  } catch (err) {
+    console.error('[Contacts] Suggest failed:', err.message);
+    res.status(500).json({ success: false, error: err.message, contacts: [] });
   } finally {
     if (conn) releaseDbConnection(conn);
   }

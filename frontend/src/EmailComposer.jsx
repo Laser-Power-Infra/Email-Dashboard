@@ -12,6 +12,7 @@ import {
   Send,
   X,
 } from 'lucide-react';
+import RecipientInput from './RecipientInput';
 import './EmailComposer.css';
 
 function composerTitle(mode) {
@@ -82,11 +83,10 @@ export default function EmailComposer({
           <div className="composer-fields">
             <label className="composer-row">
               <span>To</span>
-              <input
-                value={compose.to}
-                onChange={(event) => onChange({ to: event.target.value })}
+              <RecipientInput
+                value={compose.to || ''}
+                onChange={(to) => onChange({ to })}
                 placeholder="recipient@example.com"
-                type="text"
               />
               <button
                 type="button"
@@ -107,11 +107,10 @@ export default function EmailComposer({
             {(showCc || compose.cc) && (
               <label className="composer-row">
                 <span>Cc</span>
-                <input
+                <RecipientInput
                   value={compose.cc || ''}
-                  onChange={(event) => onChange({ cc: event.target.value })}
+                  onChange={(cc) => onChange({ cc })}
                   placeholder="cc@example.com"
-                  type="text"
                 />
               </label>
             )}
@@ -119,11 +118,10 @@ export default function EmailComposer({
             {(showBcc || compose.bcc) && (
               <label className="composer-row">
                 <span>Bcc</span>
-                <input
+                <RecipientInput
                   value={compose.bcc || ''}
-                  onChange={(event) => onChange({ bcc: event.target.value })}
+                  onChange={(bcc) => onChange({ bcc })}
                   placeholder="bcc@example.com"
-                  type="text"
                 />
               </label>
             )}

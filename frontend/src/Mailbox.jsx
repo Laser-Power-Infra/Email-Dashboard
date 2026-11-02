@@ -622,7 +622,7 @@ export default function Mailbox() {
           <h2>Mailbox</h2>
           <p>
             {profile?.emailAddress
-              ? `${profile.emailAddress} â€” live Gmail mailbox`
+              ? `${profile.emailAddress} — live Gmail mailbox`
               : 'Connect to the shared Gmail mailbox'}
           </p>
         </div>
@@ -869,7 +869,7 @@ export default function Mailbox() {
                       </div>
                     </div>
                     <div className="mailbox-message-recipients">
-                      <span><strong>To:</strong> {message.to || 'â€”'}</span>
+                      <span><strong>To:</strong> {message.to || '—'}</span>
                       {message.cc && <span><strong>Cc:</strong> {message.cc}</span>}
                     </div>
                     <EmailHtmlViewer
