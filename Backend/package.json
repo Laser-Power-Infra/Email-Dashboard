@@ -4,7 +4,9 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "test": "node server.js"
+    "test": "node server.js",
+    "mailbox:authorize": "node scripts/gmail-authorize.js",
+    "mailbox:backfill": "node scripts/backfill-read-status.js"
   },
   "keywords": [],
   "author": "",
@@ -15,6 +17,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "googleapis": "^173.0.0",
+    "iconv-lite": "^0.7.2",
     "multer": "^2.2.0",
     "mysql2": "^3.22.5",
     "nodemailer": "^9.0.1",

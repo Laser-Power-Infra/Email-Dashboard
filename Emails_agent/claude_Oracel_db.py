@@ -113,7 +113,8 @@ GEM_ID_REGEX    = re.compile(r'GEMC-[0-9]{10,16}|GEM/[0-9/A-Z_-]{8,30}|GEMC[0-9]
 print(f"Using MySQL host={MYSQL_HOST}, user={MYSQL_USER}, database={MYSQL_DATABASE}, port={MYSQL_PORT}")
 
 SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/documents.readonly",
     "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -173,6 +174,7 @@ _ALLOWED_THREAD_COLUMNS: Set[str] = {
     "priority", "is_important", "importance_reasons", "contacts",
     "footprint", "message_ids", "history_ids", "latest_history_id",
     "drive_folder_id", "company", "to_details", "user_labels", "codeword",
+    "is_unread", "unread_count", "is_starred", "last_message_id",
 }
 
 # -----------------------------------------------------------------------
@@ -246,6 +248,10 @@ def init_db():
             ("to_details",          "TEXT"),
             ("user_labels",         "TEXT"),
             ("codeword",            "VARCHAR(255)"),
+            ("is_unread",           "TINYINT(1) DEFAULT 0"),
+            ("unread_count",        "INT DEFAULT 0"),
+            ("is_starred",          "TINYINT(1) DEFAULT 0"),
+            ("last_message_id",     "VARCHAR(255)"),
         ]
         for col_name, col_type in new_columns:
             try:
@@ -838,6 +844,24 @@ def extract_gmail_labels(messages_list: List[dict], gmail_service=None) -> str:
                     continue
                 labels.add(label_name)
     return ", ".join(sorted(labels)) if labels else "[None]"
+
+def get_thread_read_state(messages_list: List[dict]) -> Tuple[int, bool, str]:
+    """Return (unread_count, is_starred, last_message_id) from Gmail thread messages."""
+    unread_count = 0
+    is_starred = False
+    last_message_id = ""
+    for msg in messages_list or []:
+        if not isinstance(msg, dict):
+            continue
+        label_ids = msg.get("labelIds") or []
+        if "UNREAD" in label_ids:
+            unread_count += 1
+        if "STARRED" in label_ids:
+            is_starred = True
+        msg_id = msg.get("id")
+        if msg_id:
+            last_message_id = str(msg_id)
+    return unread_count, is_starred, last_message_id
 
 def thread_has_changed_since(
     gmail_service, thread_id: str, start_history_id: str, current_history_id: Optional[str] = None
@@ -1848,6 +1872,7 @@ def process_gmail_batch(
             if "automation@app.smartsheet.com" in quick_from and not is_puja_agarwal:
                 logger.info(f"  [Skipped Blacklisted Sender] {quick_headers.get('from', '')} - Subject: {quick_subject[:60]}")
                 current_msg_ids = [m.get("id") for m in messages if m.get("id")]
+                bl_unread_count, bl_is_starred, bl_last_message_id = get_thread_read_state(messages)
                 row_data = {
                     "thread_id":          thread_id,
                     "related_ids":        "[None]",
@@ -1876,6 +1901,10 @@ def process_gmail_batch(
                     "latest_history_id":  thread_summary.get("historyId", ""),
                     "drive_folder_id":    None,
                     "user_labels":        extract_gmail_labels(messages, gmail_service=gmail_service),
+                    "is_unread":          1 if bl_unread_count > 0 else 0,
+                    "unread_count":       bl_unread_count,
+                    "is_starred":         1 if bl_is_starred else 0,
+                    "last_message_id":    bl_last_message_id,
                 }
                 upsert_thread(db_conn, row_data, existing_rows.get(thread_id))
                 skipped_count += 1
@@ -1888,6 +1917,7 @@ def process_gmail_batch(
                 continue
 
             current_msg_ids     = {md["id"] for md in msg_datas}
+            thread_unread_count, thread_is_starred, thread_last_message_id = get_thread_read_state(msg_datas)
             current_history_ids = set()
             for md in msg_datas:
                 hid = md.get("historyId")
@@ -2065,6 +2095,10 @@ def process_gmail_batch(
                 "latest_history_id":  current_latest_history_id,
                 "drive_folder_id":    thread_folder_id,
                 "user_labels":        extract_gmail_labels(msg_datas, gmail_service=gmail_service),
+                "is_unread":          1 if thread_unread_count > 0 else 0,
+                "unread_count":       thread_unread_count,
+                "is_starred":         1 if thread_is_starred else 0,
+                "last_message_id":    thread_last_message_id,
             }
 
             if upsert_thread(db_conn, row_data, existing_rows.get(thread_id)):
