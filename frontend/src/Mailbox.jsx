@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Archive,
+  ArrowLeft,
   Check,
   Download,
   Edit3,
@@ -479,6 +480,15 @@ export default function Mailbox({ explorer = null }) {
     });
   }, []);
 
+  // Phone layout: go back from an open conversation to the list
+  const closeConversation = useCallback(() => {
+    if (sending) return;
+    setCompose(prev => (prev && ['reply', 'replyAll', 'forward'].includes(prev.mode) ? null : prev));
+    setSelectedSummary(null);
+    setSelectedThread(null);
+    setDetailError('');
+  }, [sending]);
+
   const closeCompose = useCallback(() => {
     if (sending) return;
     setCompose(null);
@@ -725,7 +735,7 @@ export default function Mailbox({ explorer = null }) {
         </div>
       )}
 
-      <div className="mailbox-shell">
+      <div className={`mailbox-shell ${selectedSummary ? 'has-selection' : ''}`}>
         {!isExplorer && (
         <aside className="mailbox-folders">
           {FOLDERS.map(item => {
@@ -815,6 +825,12 @@ export default function Mailbox({ explorer = null }) {
         </section>
 
         <section className="mailbox-detail">
+          {selectedSummary && (
+            <button type="button" className="mailbox-back-btn" onClick={closeConversation}>
+              <ArrowLeft size={16} />
+              Back
+            </button>
+          )}
           {!selectedSummary && !detailLoading && (
             <div className="mailbox-detail-empty">
               <MailOpen size={42} />

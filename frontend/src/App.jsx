@@ -38,9 +38,13 @@ import {
   Reply,
   ReplyAll,
   Sun,
-  Moon
+  Moon,
+  Menu
 } from 'lucide-react';
 import Mailbox from './Mailbox';
+import InstallAppButton from './InstallAppButton';
+// Phone layout overrides: keep this import after Mailbox (and its CSS)
+import './mobile.css';
 import EmailHtmlViewer from './EmailHtmlViewer';
 import EmailComposer from './EmailComposer';
 import RecipientInput from './RecipientInput';
@@ -2917,6 +2921,9 @@ function App() {
   const allMatchedEmails = displayMatchedEmailsCount;
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Phone layout: the sidebar becomes a slide-out menu
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [explorerFiltersOpen, setExplorerFiltersOpen] = useState(false);
   const [subCatSearch, setSubCatSearch] = useState('');
   const [labelSearch, setLabelSearch] = useState('');
 
@@ -2934,8 +2941,11 @@ function App() {
 
   return (
     <div className="app-container">
+      {mobileNavOpen && (
+        <div className="mobile-nav-backdrop" onClick={() => setMobileNavOpen(false)} />
+      )}
       {/* Sidebar Navigation */}
-      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''} ${mobileNavOpen ? 'mobile-open' : ''}`}>
         <div className="brand" style={{ justifyContent: 'space-between', width: '100%' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', overflow: 'hidden' }}>
             <img
@@ -2956,7 +2966,7 @@ function App() {
         </div>
 
         <nav style={{ flexGrow: 1 }}>
-          <ul className="nav-menu">
+          <ul className="nav-menu" onClick={() => setMobileNavOpen(false)}>
             <li
               className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}
               onClick={() => setActiveTab('dashboard')}
@@ -3048,12 +3058,22 @@ function App() {
 
       {/* Main Content View */}
       <main className="main-content">
-        <header className="header-bar">
+        <header className={`header-bar tab-${activeTab}`}>
+          <button
+            type="button"
+            className="mobile-menu-btn"
+            onClick={() => setMobileNavOpen(true)}
+            aria-label="Open menu"
+          >
+            <Menu size={20} />
+          </button>
+          <div className="mobile-page-title">{pageTitle}</div>
           <div className="header-title">
             {pageTitle}
             <span className="header-subtitle">Match Emails Portal</span>
           </div>
           <div className="header-actions">
+            <InstallAppButton />
             <div className="search-wrapper">
               <Search className="search-icon" size={13} />
               <input
@@ -3448,7 +3468,7 @@ function App() {
                             cursor: 'pointer',
                             fontSize: '0.85rem'
                           }}
-                          className="card-interactive"
+                          className="card-interactive dash-alert-row"
                         onClick={() => openMatchChat(email)}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', overflow: 'hidden' }}>
@@ -4734,6 +4754,24 @@ function App() {
                         <button type="button" onClick={() => setAllEmailsSearch('')} title="Clear search">✕</button>
                       )}
                     </div>
+                    <button
+                      type="button"
+                      className={`explorer-chip explorer-filter-toggle ${explorerFiltersOpen ? 'active' : ''}`}
+                      onClick={() => setExplorerFiltersOpen(v => !v)}
+                    >
+                      <Filter size={13} />
+                      Filters
+                      {[selectedCategoryFilter, selectedSubCategoryFilter, selectedLabelFilter, recipientSearch,
+                        activeCompanyFilter, activeCwFilter, recStartDate || recEndDate, urgentOnly, excludeTenderTiger]
+                        .filter(Boolean).length > 0 && (
+                        <span className="explorer-filter-count">
+                          {[selectedCategoryFilter, selectedSubCategoryFilter, selectedLabelFilter, recipientSearch,
+                            activeCompanyFilter, activeCwFilter, recStartDate || recEndDate, urgentOnly, excludeTenderTiger]
+                            .filter(Boolean).length}
+                        </span>
+                      )}
+                    </button>
+                    <div className={`explorer-filters ${explorerFiltersOpen ? 'open' : ''}`}>
                     <div className="explorer-search explorer-search-small">
                       <Mail size={13} />
                       <input
@@ -4864,6 +4902,7 @@ function App() {
                         Reset ✕
                       </button>
                     )}
+                    </div>
                   </div>
                 ),
                 countLabel: `${allEmails.length} of ${allEmailsTotal} emails`,

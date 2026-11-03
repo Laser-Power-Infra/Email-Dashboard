@@ -1,0 +1,591 @@
+/* ==========================================================================
+   Email One — phone & small-tablet layout + installable-app bits.
+   Loaded last (see main.jsx). Desktop is unaffected: everything layout-related
+   is inside the max-width media queries below.
+   ========================================================================== */
+
+/* Elements that only exist for phones are hidden on desktop */
+.mobile-menu-btn,
+.mobile-page-title,
+.mobile-nav-backdrop,
+.mailbox-back-btn {
+  display: none;
+}
+
+/* Explorer filters: inline on desktop, behind a "Filters" button on phones */
+.explorer-filters {
+  display: contents;
+}
+
+.explorer-filter-toggle {
+  display: none;
+}
+
+.explorer-filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 11px;
+}
+
+/* ---- Install app button & iPhone instructions (all screen sizes) ---- */
+.install-app-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  padding: 0.3rem 0.7rem;
+  font-size: 12px;
+}
+
+.header-actions .btn {
+  white-space: nowrap;
+}
+
+@media (min-width: 821px) {
+  .header-actions {
+    flex-wrap: nowrap;
+  }
+}
+
+.install-help-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.install-help {
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+  margin: 0 12px calc(12px + env(safe-area-inset-bottom));
+  padding: 20px 20px 16px;
+  border-radius: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  text-align: center;
+}
+
+.install-help img {
+  border-radius: 12px;
+}
+
+.install-help h3 {
+  margin: 10px 0 8px;
+  font-size: 17px;
+}
+
+.install-help ol {
+  margin: 0;
+  padding-left: 20px;
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.install-help-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+/* ==========================================================================
+   Phones / small tablets
+   ========================================================================== */
+@media (max-width: 820px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  .app-container {
+    display: block;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  /* ---- Sidebar becomes a slide-out menu ---- */
+  .sidebar,
+  .sidebar.collapsed {
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 2000;
+    width: 270px !important;
+    max-width: 85vw;
+    padding: calc(1rem + env(safe-area-inset-top)) 1rem 1rem !important;
+    overflow-y: auto;
+    transform: translateX(-105%);
+    transition: transform 0.25s ease;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.4);
+  }
+
+  .sidebar.mobile-open {
+    transform: translateX(0);
+  }
+
+  /* Always show full labels in the phone menu */
+  .sidebar .nav-text,
+  .sidebar .sidebar-footer-text {
+    display: inline !important;
+  }
+
+  .sidebar .nav-item {
+    justify-content: flex-start !important;
+    padding: 0.8rem 1rem !important;
+  }
+
+  .sidebar .company-logo {
+    width: 160px !important;
+  }
+
+  .sidebar-toggle-btn {
+    display: none !important;
+  }
+
+  .mobile-nav-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 1999;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  /* ---- Main area & header ---- */
+  .main-content {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-height: none;
+    overflow: visible;
+    padding: calc(0.5rem + env(safe-area-inset-top)) 0.6rem calc(0.75rem + env(safe-area-inset-bottom)) !important;
+  }
+
+  .header-bar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    flex-wrap: wrap;
+    justify-content: flex-start !important;
+    gap: 0.5rem;
+    height: auto !important;
+    min-height: 0 !important;
+    margin: -0.5rem -0.6rem 0.6rem !important;
+    padding: 0.5rem 0.6rem !important;
+    background: var(--bg-main);
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .header-title {
+    display: none !important;
+  }
+
+  .mobile-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex: 0 0 40px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-card);
+    color: var(--text-main);
+    cursor: pointer;
+  }
+
+  .mobile-page-title {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-main);
+  }
+
+  .header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    width: 100%;
+    gap: 0.4rem;
+  }
+
+  .header-actions .search-wrapper {
+    order: 10;
+    flex: 1 1 100%;
+  }
+
+  .header-actions .search-wrapper .search-input {
+    width: 100% !important;
+  }
+
+  /* Theme buttons: icons only */
+  .theme-toggle-btn span {
+    display: none;
+  }
+
+  .install-app-btn {
+    padding: 0.4rem 0.75rem;
+  }
+
+  /* ---- Big touch-friendly controls ---- */
+  .btn,
+  select,
+  input[type='text'],
+  input[type='search'],
+  input[type='email'],
+  input[type='date'] {
+    min-height: 36px;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px !important; /* stops iPhone from zooming into inputs */
+  }
+
+  /* ---- Generic content: grids, cards, tables, filters ---- */
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 0.6rem !important;
+  }
+
+  .table-container {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .global-filter-bar,
+  .company-codeword-filter-bar,
+  .export-control-bar {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 0.6rem;
+  }
+
+  .filter-group,
+  .filter-group-right {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .filter-group,
+  .filter-group-header,
+  .filter-group-body {
+    flex-wrap: wrap !important;
+    gap: 0.4rem !important;
+  }
+
+  .filter-group-body {
+    display: flex !important;
+  }
+
+  .filter-group-body .filter-input {
+    flex: 1 1 120px;
+    min-width: 0;
+  }
+
+  .export-toggle-group,
+  .export-date-presets {
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+
+  .export-control-bar > * {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* ---- Pop-ups use the full screen ---- */
+  .modal-content {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 100dvh !important;
+    height: 100dvh;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    overflow-y: auto;
+  }
+
+  /* ==================== Mailbox / All Emails (Gmail-style) ==================== */
+  .mailbox-toolbar,
+  .mailbox-toolbar.mailbox-toolbar-explorer {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .mailbox-toolbar-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  /* Explorer: search + "Filters" button on one row; filters open below */
+  .explorer-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .explorer-toolbar > .explorer-search {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+  }
+
+  .explorer-filter-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    height: 38px;
+  }
+
+  .explorer-filters {
+    display: none;
+  }
+
+  .explorer-filters.open {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+    padding-top: 4px;
+  }
+
+  .explorer-filters .explorer-search,
+  .explorer-filters .explorer-select,
+  .explorer-filters .explorer-dates {
+    width: 100%;
+    max-width: none;
+  }
+
+  .explorer-filters .explorer-dates input {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+  }
+
+  .explorer-search {
+    height: 38px;
+  }
+
+  /* Mail tabs have their own search, so hide the global one on phones */
+  .header-bar.tab-mailbox .search-wrapper,
+  .header-bar.tab-all-emails .search-wrapper {
+    display: none;
+  }
+
+  /* Dashboard alert rows stack vertically */
+  .dash-alert-row {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 6px;
+  }
+
+  .dash-alert-row > div {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .mailbox-shell,
+  .explorer-view .mailbox-shell {
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+    border-radius: 10px;
+  }
+
+  /* Folder list → one row of chips */
+  .mailbox-folders {
+    width: 100% !important;
+    flex: 0 0 auto !important;
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 4px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-color);
+    scrollbar-width: none;
+  }
+
+  .mailbox-folders::-webkit-scrollbar {
+    display: none;
+  }
+
+  .mailbox-folder {
+    flex: 0 0 auto;
+    height: 34px;
+    padding: 0 12px;
+    border-radius: 17px;
+  }
+
+  .mailbox-folder.active {
+    box-shadow: none;
+  }
+
+  /* One pane at a time: list, or the open conversation */
+  .mailbox-list,
+  .mailbox-list.mailbox-list-wide {
+    width: 100% !important;
+    flex: 1 1 auto !important;
+    max-height: none;
+    border-right: none;
+    border-bottom: none;
+  }
+
+  .mailbox-thread-list {
+    overflow: visible;
+  }
+
+  .mailbox-thread {
+    padding: 12px;
+  }
+
+  .mailbox-thread-subject {
+    font-size: 14px;
+  }
+
+  .mailbox-thread-top,
+  .mailbox-thread-snippet {
+    font-size: 12px;
+  }
+
+  .mailbox-detail {
+    display: none;
+  }
+
+  .mailbox-shell.has-selection .mailbox-list,
+  .mailbox-shell.has-selection .mailbox-folders {
+    display: none;
+  }
+
+  .mailbox-shell.has-selection .mailbox-detail {
+    display: flex;
+    min-height: 70vh;
+  }
+
+  .mailbox-back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    margin: 8px 10px 0;
+    padding: 0 12px;
+    height: 36px;
+    border: 1px solid var(--border-color);
+    border-radius: 18px;
+    background: var(--bg-card);
+    color: var(--text-main);
+    font-size: 14px;
+    cursor: pointer;
+  }
+
+  .mailbox-detail-title h3 {
+    font-size: 16px;
+  }
+
+  /* Action bar: reply buttons on one row, icon buttons on the next */
+  .mailbox-action-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .mailbox-action-group {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+
+  .mailbox-action-btn {
+    height: 36px;
+    font-size: 13px;
+  }
+
+  .mailbox-detail-actions {
+    justify-content: space-between;
+  }
+
+  .mailbox-detail-actions button,
+  .mailbox-detail-actions a {
+    width: 40px;
+    height: 40px;
+  }
+
+  .mailbox-messages {
+    overflow: visible;
+    padding: 8px;
+  }
+
+  .mailbox-message-head {
+    flex-direction: column;
+  }
+
+  .mailbox-message-recipients {
+    word-break: break-word;
+  }
+
+  .mailbox-explorer-badges {
+    max-width: 100%;
+  }
+
+  .mailbox-explorer-footer {
+    flex-wrap: wrap;
+  }
+
+  /* Composer: full screen on phones */
+  .composer-docked {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    border-radius: 0 !important;
+    z-index: 2500;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .mailbox-toast {
+    left: 12px !important;
+    right: 12px !important;
+    bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+  }
+}
+
+/* Very small phones */
+@media (max-width: 380px) {
+  .stats-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .mailbox-action-btn {
+    padding: 0 9px;
+  }
+}
+
+/* When opened as an installed app, respect the notch area */
+@media (display-mode: standalone) {
+  body {
+    overscroll-behavior-y: none;
+  }
+}
