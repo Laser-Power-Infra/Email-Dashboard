@@ -3684,13 +3684,16 @@ app.get('/api/all-emails', async (req, res) => {
     const orderDir = sortOrder === 'asc' ? 'ASC' : 'DESC';
     const offset = (Number(page) - 1) * Number(limit);
 
-    let query = `SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender,
+    // Page ids are sorted/paginated first (index-only), then full columns are joined in.
+    // Sorting full rows (with bodies) forced a ~7s filesort over the whole table.
+    const selectColumns = `SELECT t.${colId} as id, t.thread_id, t.${colSubject} as subject, t.${colSender} as sender,
                         DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date_received,
                         DATE_FORMAT(t.${colDate}, '%Y-%m-%d %H:%i:%s') as date,
                         t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority, t.is_important, t.user_labels, t.attach_names, t.attach_links, t.is_unread, t.unread_count, t.is_starred, t.last_message_id,
                         LEFT(t.${colBody}, 3000) as body,
                         LEFT(t.${colBody}, 300) as body_preview 
                  FROM \`${table}\` t`;
+    let query = `SELECT t.${colId} as id FROM \`${table}\` t`;
     let countQuery = `SELECT COUNT(*) as total FROM \`${table}\` t`;
     
     let conditions = [];
@@ -3808,8 +3811,12 @@ app.get('/api/all-emails', async (req, res) => {
       countQuery += whereClause;
     }
 
-    query += ` ORDER BY CASE WHEN t.${colDate} IS NULL THEN 1 ELSE 0 END, t.${colDate} ${orderDir} LIMIT ${Number(limit)} OFFSET ${Number(offset)}`;
-    
+    const orderBy = `ORDER BY CASE WHEN t.${colDate} IS NULL THEN 1 ELSE 0 END, t.${colDate} ${orderDir}, t.${colId} ${orderDir}`;
+    query += ` ${orderBy} LIMIT ${Number(limit)} OFFSET ${Number(offset)}`;
+    query = `${selectColumns}
+             JOIN (${query}) page_ids ON page_ids.id = t.${colId}
+             ${orderBy}`;
+
     const [countRows] = await conn.execute(countQuery, params);
     const total = countRows[0].total;
 

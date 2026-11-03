@@ -597,3 +597,315 @@
     min-height: 460px;
   }
 }
+
+/* Explorer mode: All Emails Explorer uses this Gmail-style view without folders */
+.mailbox-list.mailbox-list-wide {
+  width: 420px;
+  flex-basis: 420px;
+}
+
+.mailbox-thread-list.is-refreshing {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.mailbox-explorer-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.mailbox-explorer-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.mailbox-explorer-badge.urgent {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.mailbox-explorer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-color);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.mailbox-explorer-footer select {
+  padding: 2px 4px;
+  font-size: 12px;
+  background: var(--bg-card);
+  color: inherit;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+}
+
+.mailbox-explorer-footer .btn {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+@media (max-width: 1180px) {
+  .mailbox-list.mailbox-list-wide {
+    width: 340px;
+    flex-basis: 340px;
+  }
+}
+
+@media (max-width: 900px) {
+  .mailbox-list.mailbox-list-wide {
+    width: 100%;
+    flex-basis: auto;
+  }
+}
+
+/* ── Unified action bar for an open conversation ── */
+.mailbox-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-card);
+}
+
+.mailbox-action-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mailbox-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mailbox-action-btn:hover {
+  background: var(--bg-card-hover);
+}
+
+.mailbox-action-btn.primary {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.mailbox-action-btn.primary:hover {
+  filter: brightness(1.1);
+}
+
+.mailbox-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mailbox-action-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--border-color);
+}
+
+.mailbox-detail-actions button,
+.mailbox-detail-actions a {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+}
+
+.mailbox-detail-actions button.danger:hover {
+  color: #ef4444;
+}
+
+.mailbox-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.mailbox-icon-btn:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-main);
+}
+
+.mailbox-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Explorer (All Emails Explorer) compact toolbar ── */
+.mailbox-toolbar.mailbox-toolbar-explorer {
+  align-items: flex-start;
+  flex-wrap: nowrap;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-card);
+}
+
+.mailbox-toolbar-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.explorer-view .mailbox-shell {
+  height: calc(100vh - 190px);
+}
+
+.explorer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.explorer-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  width: 260px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: var(--bg-main);
+  color: var(--text-muted);
+}
+
+.explorer-search.explorer-search-small {
+  width: 170px;
+}
+
+.explorer-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-main);
+  font-size: 12px;
+}
+
+.explorer-search button {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.explorer-select,
+.explorer-dates,
+.explorer-chip {
+  height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--text-main);
+  font-size: 12px;
+}
+
+.explorer-select {
+  padding: 0 10px;
+  max-width: 160px;
+  cursor: pointer;
+}
+
+.explorer-select option {
+  background: var(--bg-card);
+  color: var(--text-main);
+}
+
+.explorer-dates {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  color: var(--text-muted);
+}
+
+.explorer-dates input {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-main);
+  font-size: 12px;
+  width: 112px;
+  color-scheme: light dark;
+}
+
+.explorer-chip {
+  padding: 0 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.explorer-chip:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-main);
+}
+
+.explorer-chip.active {
+  border-color: var(--color-primary);
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--text-main);
+}
+
+.explorer-chip.explorer-reset {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+/* Keep row badges on one line */
+.mailbox-explorer-badges {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  max-width: 70%;
+}
+
+@media (max-width: 900px) {
+  .mailbox-toolbar.mailbox-toolbar-explorer {
+    flex-wrap: wrap;
+  }
+
+  .explorer-search,
+  .explorer-search.explorer-search-small {
+    width: 100%;
+  }
+}

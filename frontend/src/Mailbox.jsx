@@ -6,8 +6,8 @@ import {
   Check,
   Download,
   Edit3,
+  ExternalLink,
   Eye,
-  EyeOff,
   FileText,
   Forward,
   Inbox,
@@ -112,8 +112,23 @@ function attachmentUrl(attachment) {
     `&filename=${encodeURIComponent(attachment.filename || 'attachment')}`;
 }
 
-export default function Mailbox() {
-  const [folder, setFolder] = useState('inbox');
+/**
+ * Mailbox - live Gmail mailbox view.
+ *
+ * Optional `explorer` prop turns it into a Gmail-style view over an externally
+ * supplied (already filtered) list, e.g. the All Emails Explorer:
+ *   threads:   [{ key, threadId, from, subject, snippet, date, isUnread, isStarred,
+ *                 hasAttachments, unreadCount, messageCount, raw }]
+ *   loading, error, title, toolbar (node), countLabel, footer (node), renderBadges(item) (node)
+ *   onRefresh(), onUpdate(threadId, patch), onRemove(threadId), onInspect(raw)
+ */
+export default function Mailbox({ explorer = null }) {
+  const isExplorer = Boolean(explorer);
+  const explorerRef = useRef(explorer);
+  useEffect(() => {
+    explorerRef.current = explorer;
+  });
+  const [folder, setFolder] = useState(isExplorer ? 'all' : 'inbox');
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState('');
   const [threads, setThreads] = useState([]);
@@ -201,6 +216,7 @@ export default function Mailbox() {
 
   useEffect(() => {
     fetchProfile();
+    if (isExplorer) return undefined;
     fetchCounts();
 
     const timer = window.setInterval(() => {
@@ -216,7 +232,7 @@ export default function Mailbox() {
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [fetchProfile, fetchCounts]);
+  }, [fetchProfile, fetchCounts, isExplorer]);
 
   const fetchThreads = useCallback(async (reset = false, pageToken = null, force = false) => {
     setListLoading(true);
@@ -249,14 +265,17 @@ export default function Mailbox() {
     setSelectedSummary(null);
     setSelectedThread(null);
     setDetailError('');
-    fetchThreads(true);
-  }, [folder, search, fetchThreads]);
+    if (!isExplorer) fetchThreads(true);
+  }, [folder, search, fetchThreads, isExplorer]);
 
   const refreshAll = useCallback(async () => {
     if (quotaRemaining > 0) return;
     setQuota(null);
     clearMailboxApiCache();
-    await Promise.all([
+    await Promise.all(isExplorer ? [
+      fetchProfile(true),
+      Promise.resolve(explorerRef.current?.onRefresh?.()),
+    ] : [
       fetchProfile(true),
       fetchCounts(true),
       fetchThreads(true, null, true),
@@ -272,9 +291,16 @@ export default function Mailbox() {
         handleQuota(err);
       }
     }
-  }, [fetchThreads, fetchCounts, fetchProfile, selectedSummary, quotaRemaining, handleQuota]);
+  }, [fetchThreads, fetchCounts, fetchProfile, selectedSummary, quotaRemaining, handleQuota, isExplorer]);
 
   const loadThread = useCallback(async (summary, force = false) => {
+    if (!summary.threadId) {
+      setSelectedSummary(summary);
+      setSelectedThread(null);
+      setDetailLoading(false);
+      setDetailError('This email has no Gmail thread id yet, so it cannot be opened live. Use "Inspect" to view the stored copy.');
+      return;
+    }
     setSelectedSummary(summary);
     setDetailLoading(true);
     setDetailError('');
@@ -311,9 +337,25 @@ export default function Mailbox() {
         isStarred: data.isStarred,
       } : item));
 
-      if (['archive', 'trash', 'spam', 'untrash', 'unspam', 'unarchive'].includes(action)) {
-        setThreads(prev => prev.filter(item => item.threadId !== threadId));
-        if (selectedSummary?.threadId === threadId) {
+      // In All Mail (explorer) view, archived mail stays visible like Gmail's All Mail.
+      const removes = isExplorer
+        ? ['trash', 'spam'].includes(action)
+        : ['archive', 'trash', 'spam', 'untrash', 'unspam', 'unarchive'].includes(action);
+      if (isExplorer) {
+        if (removes) {
+          explorerRef.current?.onRemove?.(threadId);
+        } else {
+          explorerRef.current?.onUpdate?.(threadId, {
+            unreadCount: data.unreadCount,
+            isUnread: data.isUnread,
+            isStarred: data.isStarred,
+          });
+        }
+      }
+
+      if (removes || ['archive', 'unarchive', 'untrash', 'unspam'].includes(action)) {
+        if (removes) setThreads(prev => prev.filter(item => item.threadId !== threadId));
+        if (removes && selectedSummary?.threadId === threadId) {
           setSelectedSummary(null);
           setSelectedThread(null);
         }
@@ -347,7 +389,7 @@ export default function Mailbox() {
     } finally {
       setActionBusy('');
     }
-  }, [selectedSummary, showToast, handleQuota]);
+  }, [selectedSummary, showToast, handleQuota, isExplorer]);
 
   useEffect(() => {
     if (compose && ['reply', 'replyAll', 'forward'].includes(compose.mode)) {
@@ -543,14 +585,18 @@ export default function Mailbox() {
       clearMailboxApiCache();
       showToast('Email sent and saved in Gmail.');
       setCompose(null);
-      fetchThreads(true);
-      fetchCounts();
+      if (isExplorer) {
+        explorerRef.current?.onRefresh?.();
+      } else {
+        fetchThreads(true);
+        fetchCounts();
+      }
     } catch (err) {
       if (!handleQuota(err)) showToast(err.message, 'error');
     } finally {
       setSending(false);
     }
-  }, [compose, composePayload, showToast, fetchThreads, fetchCounts, handleQuota]);
+  }, [compose, composePayload, showToast, fetchThreads, fetchCounts, handleQuota, isExplorer]);
 
   const saveDraft = useCallback(async () => {
     if (!compose) return;
@@ -614,22 +660,37 @@ export default function Mailbox() {
   };
 
   const authWarning = profile && (profile.needsAuth || profile.canSend === false || profile.error);
+  const visibleThreads = isExplorer ? (explorer.threads || []) : threads;
+  const visibleLoading = isExplorer ? Boolean(explorer.loading) : listLoading;
+  const visibleError = isExplorer ? (explorer.error || '') : listError;
+  const itemKey = (item) => item && (item.key || item.threadId);
 
   return (
     <div className="mailbox-page">
-      <div className="mailbox-toolbar">
-        <div>
-          <h2>Mailbox</h2>
-          <p>
-            {profile?.emailAddress
-              ? `${profile.emailAddress} — live Gmail mailbox`
-              : 'Connect to the shared Gmail mailbox'}
-          </p>
-        </div>
+      <div className={`mailbox-toolbar ${isExplorer ? 'mailbox-toolbar-explorer' : ''}`}>
+        {isExplorer ? (
+          explorer.toolbar || <h2>{explorer.title || 'All Mail'}</h2>
+        ) : (
+          <div>
+            <h2>Mailbox</h2>
+            <p>
+              {profile?.emailAddress
+                ? `${profile.emailAddress} — live Gmail mailbox`
+                : 'Connect to the shared Gmail mailbox'}
+            </p>
+          </div>
+        )}
         <div className="mailbox-toolbar-actions">
-          <button className="btn btn-secondary" onClick={refreshAll} disabled={listLoading || quotaRemaining > 0}>
-            <RefreshCw size={14} className={listLoading ? 'spinner' : ''} />
-            Refresh
+          {isExplorer && explorer.countLabel && (
+            <span className="mailbox-toolbar-count">{explorer.countLabel}</span>
+          )}
+          <button
+            className="mailbox-icon-btn"
+            onClick={refreshAll}
+            disabled={visibleLoading || quotaRemaining > 0}
+            title="Refresh"
+          >
+            <RefreshCw size={15} className={visibleLoading ? 'spinner' : ''} />
           </button>
           <button className="btn btn-primary" onClick={openNewCompose}>
             <Plus size={14} />
@@ -665,6 +726,7 @@ export default function Mailbox() {
       )}
 
       <div className="mailbox-shell">
+        {!isExplorer && (
         <aside className="mailbox-folders">
           {FOLDERS.map(item => {
             const Icon = item.icon;
@@ -682,8 +744,10 @@ export default function Mailbox() {
             );
           })}
         </aside>
+        )}
 
-        <section className="mailbox-list">
+        <section className={`mailbox-list ${isExplorer ? 'mailbox-list-wide' : ''}`}>
+          {!isExplorer && (
           <div className="mailbox-search">
             <Search size={14} />
             <input
@@ -697,22 +761,25 @@ export default function Mailbox() {
               </button>
             )}
           </div>
+          )}
 
-          {listError && <div className="mailbox-empty error">{listError}</div>}
+          {visibleError && <div className="mailbox-empty error">{visibleError}</div>}
 
-          {listLoading && threads.length === 0 ? (
+          {visibleLoading && visibleThreads.length === 0 ? (
             <div className="mailbox-loading">
               <Loader2 size={22} className="spinner" />
-              Loading {folder}...
+              Loading {isExplorer ? 'emails' : folder}...
             </div>
-          ) : threads.length === 0 && !listError ? (
-            <div className="mailbox-empty">No conversations in {folder}.</div>
+          ) : visibleThreads.length === 0 && !visibleError ? (
+            <div className="mailbox-empty">
+              {isExplorer ? 'No emails match your selected filters.' : `No conversations in ${folder}.`}
+            </div>
           ) : (
-            <div className="mailbox-thread-list">
-              {threads.map(item => (
+            <div className={`mailbox-thread-list ${visibleLoading ? 'is-refreshing' : ''}`}>
+              {visibleThreads.map(item => (
                 <button
-                  key={item.threadId}
-                  className={`mailbox-thread ${item.isUnread ? 'unread' : ''} ${selectedSummary?.threadId === item.threadId ? 'selected' : ''}`}
+                  key={itemKey(item)}
+                  className={`mailbox-thread ${item.isUnread ? 'unread' : ''} ${selectedSummary && itemKey(selectedSummary) === itemKey(item) ? 'selected' : ''}`}
                   onClick={() => loadThread(item)}
                 >
                   <div className="mailbox-thread-top">
@@ -727,13 +794,16 @@ export default function Mailbox() {
                     {item.hasAttachments && <Paperclip size={12} />}
                     {item.unreadCount > 0 && <span>{item.unreadCount > 1 ? `${item.unreadCount} unread` : 'Unread'}</span>}
                     {item.messageCount > 1 && <span>{item.messageCount} messages</span>}
+                    {isExplorer && explorer.renderBadges && explorer.renderBadges(item)}
                   </div>
                 </button>
               ))}
             </div>
           )}
 
-          {nextPageToken && (
+          {isExplorer && explorer.footer}
+
+          {!isExplorer && nextPageToken && (
             <button
               className="mailbox-load-more"
               onClick={() => fetchThreads(false, nextPageToken)}
@@ -760,7 +830,19 @@ export default function Mailbox() {
             </div>
           )}
 
-          {detailError && <div className="mailbox-empty error">{detailError}</div>}
+          {detailError && (
+            <div className="mailbox-empty error">
+              {detailError}
+              {isExplorer && selectedSummary?.raw && explorer.onInspect && (
+                <div style={{ marginTop: 10 }}>
+                  <button className="btn btn-secondary" onClick={() => explorer.onInspect(selectedSummary.raw)}>
+                    <Eye size={14} />
+                    Inspect
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {selectedThread && !detailLoading && (
             <>
@@ -769,90 +851,105 @@ export default function Mailbox() {
                   <h3>{selectedThread.subject}</h3>
                   <span>{selectedThread.messageCount} message{selectedThread.messageCount === 1 ? '' : 's'}</span>
                 </div>
-                <div className="mailbox-detail-actions">
-                  <button
-                    title={selectedThread.isUnread ? 'Mark as read' : 'Mark as unread'}
-                    onClick={() => applyAction(selectedThread.threadId, selectedThread.isUnread ? 'read' : 'unread')}
-                    disabled={Boolean(actionBusy) || quotaRemaining > 0}
-                  >
-                    {selectedThread.isUnread ? <Eye size={15} /> : <EyeOff size={15} />}
+              </div>
+
+              <div className="mailbox-action-bar">
+                <div className="mailbox-action-group">
+                  <button className="mailbox-action-btn primary" onClick={() => openCompose('reply')}>
+                    <Reply size={14} />
+                    Reply
                   </button>
+                  <button className="mailbox-action-btn" onClick={() => openCompose('replyAll')}>
+                    <ReplyAll size={14} />
+                    Reply all
+                  </button>
+                  <button className="mailbox-action-btn" onClick={() => openCompose('forward')}>
+                    <Forward size={14} />
+                    Forward
+                  </button>
+                  {selectedThread.draftId && (
+                    <>
+                      <span className="mailbox-action-divider" />
+                      <button className="mailbox-action-btn" onClick={() => openCompose('draft')}>
+                        <Edit3 size={14} />
+                        Edit draft
+                      </button>
+                      <button
+                        className="mailbox-action-btn primary"
+                        onClick={() => sendExistingDraft(selectedThread.draftId)}
+                        disabled={actionBusy === 'sendDraft'}
+                      >
+                        <Send size={14} />
+                        Send draft
+                      </button>
+                      <button
+                        className="mailbox-action-btn"
+                        onClick={() => deleteExistingDraft(selectedThread.draftId)}
+                        disabled={actionBusy === 'deleteDraft'}
+                      >
+                        <Trash2 size={14} />
+                        Delete draft
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                <div className="mailbox-detail-actions">
                   <button
                     title={selectedThread.isStarred ? 'Unstar' : 'Star'}
                     onClick={() => applyAction(selectedThread.threadId, selectedThread.isStarred ? 'unstar' : 'star')}
                     disabled={Boolean(actionBusy) || quotaRemaining > 0}
                   >
-                    <Star size={15} className={selectedThread.isStarred ? 'starred' : ''} />
+                    <Star size={16} className={selectedThread.isStarred ? 'starred' : ''} />
                   </button>
+                  <button
+                    title={selectedThread.isUnread ? 'Mark as read' : 'Mark as unread'}
+                    onClick={() => applyAction(selectedThread.threadId, selectedThread.isUnread ? 'read' : 'unread')}
+                    disabled={Boolean(actionBusy) || quotaRemaining > 0}
+                  >
+                    {selectedThread.isUnread ? <MailOpen size={16} /> : <Mail size={16} />}
+                  </button>
+                  <span className="mailbox-action-divider" />
                   <button
                     title="Archive"
                     onClick={() => applyAction(selectedThread.threadId, 'archive')}
                     disabled={Boolean(actionBusy) || quotaRemaining > 0}
                   >
-                    <Archive size={15} />
+                    <Archive size={16} />
                   </button>
                   <button
-                    title="Move to spam"
+                    title="Report spam"
                     onClick={() => applyAction(selectedThread.threadId, 'spam')}
                     disabled={Boolean(actionBusy) || quotaRemaining > 0}
                   >
-                    <AlertTriangle size={15} />
+                    <AlertTriangle size={16} />
                   </button>
                   <button
-                    title="Move to trash"
+                    className="danger"
+                    title="Delete (move to trash)"
                     onClick={() => applyAction(selectedThread.threadId, 'trash')}
                     disabled={Boolean(actionBusy) || quotaRemaining > 0}
                   >
-                    <Trash2 size={15} />
+                    <Trash2 size={16} />
                   </button>
+                  <span className="mailbox-action-divider" />
+                  {isExplorer && selectedSummary?.raw && explorer.onInspect && (
+                    <button
+                      title="Inspect stored copy (category, labels, OCR)"
+                      onClick={() => explorer.onInspect(selectedSummary.raw)}
+                    >
+                      <FileText size={16} />
+                    </button>
+                  )}
                   <a
                     href={`https://mail.google.com/mail/u/0/#all/${selectedThread.threadId}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     title="Open in Gmail"
                   >
-                    <Mail size={15} />
+                    <ExternalLink size={16} />
                   </a>
                 </div>
-              </div>
-
-              <div className="mailbox-reply-bar">
-                <button className="btn btn-primary" onClick={() => openCompose('reply')}>
-                  <Reply size={14} />
-                  Reply
-                </button>
-                <button className="btn btn-secondary" onClick={() => openCompose('replyAll')}>
-                  <ReplyAll size={14} />
-                  Reply All
-                </button>
-                <button className="btn btn-secondary" onClick={() => openCompose('forward')}>
-                  <Forward size={14} />
-                  Forward
-                </button>
-                {selectedThread.draftId && (
-                  <>
-                    <button className="btn btn-secondary" onClick={() => openCompose('draft')}>
-                      <Edit3 size={14} />
-                      Edit Draft
-                    </button>
-                    <button
-                      className="btn btn-primary"
-                      onClick={() => sendExistingDraft(selectedThread.draftId)}
-                      disabled={actionBusy === 'sendDraft'}
-                    >
-                      <Send size={14} />
-                      Send Draft
-                    </button>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={() => deleteExistingDraft(selectedThread.draftId)}
-                      disabled={actionBusy === 'deleteDraft'}
-                    >
-                      <Trash2 size={14} />
-                      Delete Draft
-                    </button>
-                  </>
-                )}
               </div>
 
               <div className="mailbox-messages">

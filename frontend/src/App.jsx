@@ -3129,7 +3129,7 @@ function App() {
         )}
 
         {/* Global Filter Bar & Company Filters (only for tenders, emails, and all-emails tabs) */}
-        {['tenders', 'emails', 'all-emails'].includes(activeTab) && (
+        {['tenders', 'emails'].includes(activeTab) && (
           <>
             <div className="global-filter-bar">
               <div className="filter-group">
@@ -4716,587 +4716,248 @@ function App() {
 
         {/* 5. ALL EMAILS EXPLORER TAB */}
         {activeTab === 'all-emails' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            
-            {/* Category, Sub-Cat, & Custom Labels Multi-Select Filter Bar */}
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.75rem',
-              padding: '1rem 1.25rem',
-              background: 'rgba(255,255,255,0.02)',
-              borderRadius: '6px',
-              border: '1px solid rgba(255,255,255,0.08)'
-            }}>
-              {/* Dropdowns Row */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap' }}>
-                {/* Category Dropdown */}
-                <SearchableMultiSelectDropdown
-                  label="Category"
-                  icon={<Grid size={14} />}
-                  options={availableCategories}
-                  selectedValues={selectedCategoryFilter ? selectedCategoryFilter.split(',').filter(Boolean) : []}
-                  onSelectChange={(vals) => {
-                    setSelectedCategoryFilter(vals.join(','));
-                    if (vals.length === 0) setSelectedSubCategoryFilter('');
-                  }}
-                  placeholder="Search category..."
-                />
+          <div className="explorer-view">
+            {/* Gmail-style All Mail view with one compact filter toolbar */}
+            <Mailbox
+              explorer={{
+                toolbar: (
+                  <div className="explorer-toolbar">
+                    <div className="explorer-search">
+                      <Search size={14} />
+                      <input
+                        type="text"
+                        placeholder="Search subject, sender, body..."
+                        value={allEmailsSearch}
+                        onChange={(e) => setAllEmailsSearch(e.target.value)}
+                      />
+                      {allEmailsSearch && (
+                        <button type="button" onClick={() => setAllEmailsSearch('')} title="Clear search">✕</button>
+                      )}
+                    </div>
+                    <div className="explorer-search explorer-search-small">
+                      <Mail size={13} />
+                      <input
+                        type="text"
+                        placeholder="Recipient..."
+                        value={recipientSearch}
+                        onChange={(e) => setRecipientSearch(e.target.value)}
+                      />
+                      {recipientSearch && (
+                        <button type="button" onClick={() => setRecipientSearch('')} title="Clear recipient">✕</button>
+                      )}
+                    </div>
 
-                {/* Sub-Category Dropdown */}
-                {explorerSubCategories.length > 0 && (
-                  <SearchableMultiSelectDropdown
-                    label="Sub-Cat"
-                    icon={<Layers size={14} />}
-                    options={explorerSubCategories}
-                    selectedValues={selectedSubCategoryFilter ? selectedSubCategoryFilter.split(',').filter(Boolean) : []}
-                    onSelectChange={(vals) => setSelectedSubCategoryFilter(vals.join(','))}
-                    placeholder="Search sub-cat..."
-                  />
-                )}
-
-                {/* Custom Labels Dropdown */}
-                {availableLabels.length > 0 && (
-                  <SearchableMultiSelectDropdown
-                    label={`Custom Labels (${availableLabels.length})`}
-                    icon={<Tag size={14} />}
-                    options={availableLabels}
-                    selectedValues={selectedLabelFilter ? selectedLabelFilter.split(',').filter(Boolean) : []}
-                    onSelectChange={(vals) => setSelectedLabelFilter(vals.join(','))}
-                    placeholder="Search labels..."
-                  />
-                )}
-
-                {/* Reset All Filters Button */}
-                {(selectedCategoryFilter || selectedSubCategoryFilter || selectedLabelFilter) && (
-                  <button
-                    className="btn btn-secondary"
-                    style={{
-                      padding: '0.45rem 0.85rem',
-                      borderRadius: '8px',
-                      fontSize: '0.78rem',
-                      backgroundColor: 'rgba(239, 68, 68, 0.15)',
-                      color: '#ef4444',
-                      borderColor: 'rgba(239, 68, 68, 0.3)',
-                      cursor: 'pointer'
-                    }}
-                    onClick={() => {
-                      setSelectedCategoryFilter('');
-                      setSelectedSubCategoryFilter('');
-                      setSelectedLabelFilter('');
-                    }}
-                  >
-                    Reset All Filters ✕
-                  </button>
-                )}
-              </div>
-
-              {/* Active Selected Badges / Chips Display Bar */}
-              {(selectedCategoryFilter || selectedSubCategoryFilter || selectedLabelFilter) && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', paddingTop: '0.4rem', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                  <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Active Filters:</span>
-                  
-                  {/* Category Chips */}
-                  {selectedCategoryFilter && selectedCategoryFilter.split(',').filter(Boolean).map(cat => (
-                    <span
-                      key={`cat-${cat}`}
-                      style={{
-                        display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
-                        padding: '0.2rem 0.65rem', borderRadius: '6px', fontSize: '0.75rem',
-                        backgroundColor: `${CATEGORY_COLORS[cat] || '#818cf8'}25`,
-                        border: `1px solid ${CATEGORY_COLORS[cat] || '#818cf8'}60`,
-                        color: CATEGORY_COLORS[cat] || '#818cf8', fontWeight: 600
+                    <SearchableMultiSelectDropdown
+                      label="Category"
+                      icon={<Grid size={13} />}
+                      options={availableCategories}
+                      selectedValues={selectedCategoryFilter ? selectedCategoryFilter.split(',').filter(Boolean) : []}
+                      onSelectChange={(vals) => {
+                        setSelectedCategoryFilter(vals.join(','));
+                        if (vals.length === 0) setSelectedSubCategoryFilter('');
                       }}
+                      placeholder="Search category..."
+                    />
+                    {explorerSubCategories.length > 0 && (
+                      <SearchableMultiSelectDropdown
+                        label="Sub-Cat"
+                        icon={<Layers size={13} />}
+                        options={explorerSubCategories}
+                        selectedValues={selectedSubCategoryFilter ? selectedSubCategoryFilter.split(',').filter(Boolean) : []}
+                        onSelectChange={(vals) => setSelectedSubCategoryFilter(vals.join(','))}
+                        placeholder="Search sub-cat..."
+                      />
+                    )}
+                    {availableLabels.length > 0 && (
+                      <SearchableMultiSelectDropdown
+                        label="Labels"
+                        icon={<Tag size={13} />}
+                        options={availableLabels}
+                        selectedValues={selectedLabelFilter ? selectedLabelFilter.split(',').filter(Boolean) : []}
+                        onSelectChange={(vals) => setSelectedLabelFilter(vals.join(','))}
+                        placeholder="Search labels..."
+                      />
+                    )}
+
+                    <select
+                      className="explorer-select"
+                      value={activeCompanyFilter}
+                      onChange={(e) => { setActiveCwFilter(''); setActiveCompanyFilter(e.target.value); }}
+                      title="Company"
                     >
-                      {cat}
-                      <span
-                        style={{ cursor: 'pointer', opacity: 0.8, marginLeft: '0.1rem' }}
-                        onClick={() => {
-                          const next = selectedCategoryFilter.split(',').filter(c => c !== cat).join(',');
-                          setSelectedCategoryFilter(next);
-                        }}
+                      <option value="">All companies</option>
+                      {[...COMPANY_LIST, 'OUTSIDER'].map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                    {codewordsList.length > 0 && (
+                      <select
+                        className="explorer-select"
+                        value={activeCwFilter}
+                        onChange={(e) => setActiveCwFilter(e.target.value)}
+                        title="Codeword"
                       >
-                        ✕
-                      </span>
-                    </span>
-                  ))}
+                        <option value="">All codewords</option>
+                        {codewordsList.map(cw => (
+                          <option key={cw.codeword} value={cw.codeword}>{cw.codeword}</option>
+                        ))}
+                      </select>
+                    )}
 
-                  {/* Sub-Category Chips */}
-                  {selectedSubCategoryFilter && selectedSubCategoryFilter.split(',').filter(Boolean).map(sub => (
-                    <span
-                      key={`sub-${sub}`}
-                      style={{
-                        display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
-                        padding: '0.2rem 0.65rem', borderRadius: '6px', fontSize: '0.75rem',
-                        backgroundColor: 'rgba(99,102,241,0.2)',
-                        border: '1px solid rgba(99,102,241,0.4)',
-                        color: '#818cf8', fontWeight: 600
-                      }}
+                    <div className="explorer-dates" title="Email received date">
+                      <Calendar size={13} />
+                      <input
+                        type="date"
+                        value={recStartDate}
+                        onChange={(e) => { setRecFilterMode('range'); setRecStartDate(e.target.value); }}
+                      />
+                      <span>–</span>
+                      <input
+                        type="date"
+                        value={recEndDate}
+                        onChange={(e) => { setRecFilterMode('range'); setRecEndDate(e.target.value); }}
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      className="explorer-chip"
+                      onClick={() => setDateSortOrder(o => o === 'asc' ? 'desc' : 'asc')}
+                      title="Change sort order"
                     >
-                      Sub: {sub}
-                      <span
-                        style={{ cursor: 'pointer', opacity: 0.8, marginLeft: '0.1rem' }}
-                        onClick={() => {
-                          const next = selectedSubCategoryFilter.split(',').filter(s => s !== sub).join(',');
-                          setSelectedSubCategoryFilter(next);
-                        }}
-                      >
-                        ✕
-                      </span>
-                    </span>
-                  ))}
-
-                  {/* Custom Label Chips */}
-                  {selectedLabelFilter && selectedLabelFilter.split(',').filter(Boolean).map(lbl => (
-                    <span
-                      key={`lbl-${lbl}`}
-                      style={{
-                        display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
-                        padding: '0.2rem 0.65rem', borderRadius: '6px', fontSize: '0.75rem',
-                        backgroundColor: 'rgba(236,72,153,0.2)',
-                        border: '1px solid rgba(236,72,153,0.4)',
-                        color: '#ec4899', fontWeight: 600
-                      }}
-                    >
-                      Label: {lbl}
-                      <span
-                        style={{ cursor: 'pointer', opacity: 0.8, marginLeft: '0.1rem' }}
-                        onClick={() => {
-                          const next = selectedLabelFilter.split(',').filter(l => l !== lbl).join(',');
-                          setSelectedLabelFilter(next);
-                        }}
-                      >
-                        ✕
-                      </span>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Explorer Sub-filters Bar */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-
-                {/* Local Search inside All Emails */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Search:</span>
-                  <input
-                    type="text"
-                    placeholder="Search subject, body, OCR..."
-                    className="search-input"
-                    style={{ 
-                      padding: '0.45rem 1rem', 
-                      background: 'rgba(255,255,255,0.03)', 
-                      border: '1px solid var(--border-color)', 
-                      borderRadius: '8px',
-                      fontSize: '0.85rem',
-                      width: '220px'
-                    }}
-                    value={allEmailsSearch}
-                    onChange={(e) => setAllEmailsSearch(e.target.value)}
-                  />
-                  {allEmailsSearch && (
-                    <button 
-                      className="btn-clear" 
-                      onClick={() => setAllEmailsSearch('')}
-                      style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', marginLeft: '-1.75rem', zIndex: 5 }}
-                    >
-                      ✕
+                      {dateSortOrder === 'asc' ? 'Oldest first ↑' : 'Newest first ↓'}
                     </button>
-                  )}
-                </div>
-
-                {/* Recipient Search inside All Emails */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Recipient:</span>
-                  <input
-                    type="text"
-                    placeholder="Recipient email..."
-                    className="search-input"
-                    style={{ 
-                      padding: '0.45rem 1rem', 
-                      background: 'rgba(255,255,255,0.03)', 
-                      border: '1px solid var(--border-color)', 
-                      borderRadius: '8px',
-                      fontSize: '0.85rem',
-                      width: '220px'
-                    }}
-                    value={recipientSearch}
-                    onChange={(e) => setRecipientSearch(e.target.value)}
-                  />
-                  {recipientSearch && (
-                    <button 
-                      className="btn-clear" 
-                      onClick={() => setRecipientSearch('')}
-                      style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', marginLeft: '-1.75rem', zIndex: 5 }}
+                    <button
+                      type="button"
+                      className={`explorer-chip ${urgentOnly ? 'active' : ''}`}
+                      onClick={() => setUrgentOnly(v => !v)}
+                      title="Only Sales/Legal emails that need an urgent reply"
                     >
-                      ✕
+                      Urgent only
                     </button>
-                  )}
-                </div>
+                    <button
+                      type="button"
+                      className={`explorer-chip ${excludeTenderTiger ? 'active' : ''}`}
+                      onClick={() => setExcludeTenderTiger(v => !v)}
+                      title="Hide emails from @tendertiger.com"
+                    >
+                      Hide TenderTiger
+                    </button>
 
-                {/* Urgent Sales/Legal Only Toggle */}
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', cursor: 'pointer', userSelect: 'none', color: 'var(--text-muted)' }}>
-                  <input
-                    type="checkbox"
-                    checked={urgentOnly}
-                    onChange={(e) => setUrgentOnly(e.target.checked)}
-                  />
-                  Urgent - Sales/Legal Only
-                </label>
-              </div>
-
-              {/* Total items count & Pagination info */}
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                Showing <strong>{allEmails.length}</strong> of <strong>{allEmailsTotal}</strong> emails
-              </div>
-            </div>
-
-            {/* Emails Table */}
-            {allEmailsLoading ? (
-              <div className="table-container">
-                <table className="tenders-table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: '160px', whiteSpace: 'nowrap' }}>Date Received</th>
-                      <th>Subject & Preview</th>
-                      <th style={{ width: '220px' }}>Sender</th>
-                      <th style={{ width: '220px' }}>All Recipients</th>
-                      <th style={{ width: '150px' }}>Category</th>
-                      <th style={{ width: '200px' }}>Custom Labels</th>
-                      <th style={{ width: '100px', textAlign: 'right' }}>Actions</th>
-                    </tr>
-                  </thead>
-                  <TableSkeleton rows={8} type="all-emails" />
-                </table>
-              </div>
-            ) : allEmails.length === 0 ? (
-              <div className="empty-state">
-                <Mail size={40} />
-                <h3>No Emails Found</h3>
-                <p>No emails match your selected filters. Try clearing your search or category toggles.</p>
-              </div>
-            ) : (
-              <div className="table-container">
-                <table className="tenders-table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: '160px', whiteSpace: 'nowrap', color: 'var(--color-primary-light)' }}>
-                        <button
-                          className="sort-th-btn"
-                          onClick={() => setDateSortOrder(o => o === 'asc' ? 'desc' : 'asc')}
-                          title={dateSortOrder === 'asc' ? 'Oldest first — click for Newest' : 'Newest first — click for Oldest'}
-                        >
-                          Date Received
-                          <span style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            width: '1.35rem',
-                            height: '1.35rem',
-                            borderRadius: '4px',
-                            background: 'rgba(99,102,241,0.18)',
-                            border: '1px solid rgba(99,102,241,0.35)',
-                            fontSize: '0.8rem',
-                            fontWeight: 800,
-                            color: '#818cf8',
-                            marginLeft: '0.25rem',
-                            transition: 'all 0.2s ease'
-                          }}>{dateSortOrder === 'asc' ? '↑' : '↓'}</span>
-                        </button>
-                      </th>
-                      <th>Subject & Preview</th>
-                      <th style={{ width: '220px' }}>Sender</th>
-                      <th style={{ width: '220px' }}>All Recipients</th>
-                      <th style={{ width: '150px' }}>Category</th>
-                      <th style={{ width: '200px' }}>Custom Labels</th>
-                      <th style={{ width: '100px', textAlign: 'right' }}>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {allEmails.map(email => (
-                      <tr 
-                        key={email.id} 
-                        onClick={() => handleOpenEmailDetail(email.id)} 
-                        style={{ cursor: 'pointer' }} 
-                        className="row-interactive"
+                    {(selectedCategoryFilter || selectedSubCategoryFilter || selectedLabelFilter || allEmailsSearch ||
+                      recipientSearch || activeCompanyFilter || activeCwFilter || recStartDate || recEndDate ||
+                      urgentOnly || excludeTenderTiger) && (
+                      <button
+                        type="button"
+                        className="explorer-chip explorer-reset"
+                        onClick={() => {
+                          setSelectedCategoryFilter('');
+                          setSelectedSubCategoryFilter('');
+                          setSelectedLabelFilter('');
+                          setAllEmailsSearch('');
+                          setRecipientSearch('');
+                          setActiveCompanyFilter('');
+                          setActiveCwFilter('');
+                          handleClearRecFilter();
+                          setUrgentOnly(false);
+                          setExcludeTenderTiger(false);
+                        }}
                       >
-                        <td style={{ fontWeight: 600, fontSize: '0.85rem' }}>
-                          {formatDateTime(email.date || email.date_received)}
-                        </td>
-                        <td>
-                          <div style={{ fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            {email.is_unread === 1 && (
-                              <span
-                                title={`${email.unread_count || 1} unread message(s)`}
-                                style={{
-                                  width: '8px',
-                                  height: '8px',
-                                  borderRadius: '50%',
-                                  backgroundColor: '#818cf8',
-                                  boxShadow: '0 0 8px rgba(129,140,248,0.8)',
-                                  flexShrink: 0
-                                }}
-                              />
-                            )}
-                            {email.is_important === 1 && (
-                              <span 
-                                className="badge badge-danger" 
-                                style={{ 
-                                  fontSize: '0.65rem', 
-                                  padding: '0.1rem 0.3rem', 
-                                  borderRadius: '4px',
-                                  backgroundColor: 'var(--color-danger)'
-                                }}
-                              >
-                                Important
-                              </span>
-                            )}
-                            {email.reply_required === 1 && (
-                              <span 
-                                className="badge badge-danger" 
-                                style={{ 
-                                  fontSize: '0.65rem', 
-                                  padding: '0.1rem 0.3rem', 
-                                  borderRadius: '4px',
-                                  backgroundColor: '#ef4444'
-                                }}
-                                title={email.reply_reason || 'Urgent reply required'}
-                              >
-                                Urgent Reply
-                              </span>
-                            )}
-                            <span style={{ fontWeight: email.is_unread === 1 ? 800 : 600 }}>
-                              {email.subject}
-                            </span>
-                          </div>
-                          <div 
-                            style={{ 
-                              fontSize: '0.75rem', 
-                              color: 'var(--text-muted)', 
-                              maxWidth: '450px', 
-                              overflow: 'hidden', 
-                              textOverflow: 'ellipsis', 
-                              whiteSpace: 'nowrap',
-                              marginTop: '0.2rem'
-                            }}
-                          >
-                            {email.body_preview}
-                          </div>
-                        </td>
-                        <td style={{ fontSize: '0.85rem', color: 'var(--text-main)', maxWidth: '220px', overflow: 'hidden' }} title={email.sender}>
-                          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}>{email.sender}</div>
-                          {email.to_details && (
-                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.1rem', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={email.to_details}>
-                              <span style={{ fontWeight: 600 }}>Receiver: </span>{email.to_details}
-                            </div>
-                          )}
-                          {email.cc_details && (
-                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.1rem', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={email.cc_details}>
-                              <span style={{ fontWeight: 600 }}>CC: </span>{email.cc_details}
-                            </div>
-                          )}
-                          <div className="company-badge-list" style={{ marginTop: '0.15rem' }}>
-                            {renderSenderBadges(email).map((b, i) => (
-                              <React.Fragment key={i}>
-                                {renderCustomBadge(b.type, b.label, b.color)}
-                              </React.Fragment>
-                            ))}
-                          </div>
-                        </td>
-                        <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={mergeEmailLists(email.to_details, email.cc_details)}>
-                          {mergeEmailLists(email.to_details, email.cc_details) || '—'}
-                        </td>
-                        <td>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', alignItems: 'flex-start' }}>
-                            <span 
-                              className={`badge ${
-                                email.category?.toLowerCase().includes('finance') || email.category?.toLowerCase().includes('banking') ? 'badge-success' :
-                                email.category?.toLowerCase().includes('legal') ? 'badge-danger' :
-                                email.category?.toLowerCase().includes('sales') ? 'badge-warning' :
-                                email.category?.toLowerCase().includes('purchase') ? 'badge-info' :
-                                email.category?.toLowerCase().includes('hr') ? 'badge-secondary' :
-                                email.category?.toLowerCase().includes('promotion') ? 'badge-muted' :
-                                'badge-muted'
-                              }`}
-                            >
-                              {email.category || 'General'}
-                            </span>
-                            {email.sub_category && (
-                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontStyle: 'italic', paddingLeft: '0.25rem' }}>
-                                {email.sub_category}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }} onClick={(e) => e.stopPropagation()}>
-                            {email.user_labels ? (
-                              email.user_labels.split(',').map(lbl => {
-                                const label = lbl.trim();
-                                if (!label) return null;
-                                return (
-                                  <span 
-                                    key={label} 
-                                    className="badge badge-success"
-                                    style={{ 
-                                      fontSize: '0.7rem', 
-                                      padding: '0.15rem 0.4rem', 
-                                      borderRadius: '4px',
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: '0.2'
-                                    }}
-                                  >
-                                    {label}
-                                    <span 
-                                      style={{ cursor: 'pointer', fontWeight: 'bold', fontSize: '0.65rem' }} 
-                                      onClick={() => handleRemoveLabel(email, label)}
-                                    >
-                                      ✕
-                                    </span>
-                                  </span>
-                                );
-                              })
-                            ) : (
-                              <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontStyle: 'italic' }}>-</span>
-                            )}
-                          </div>
-                        </td>
-                        <td style={{ textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
-                          <div style={{ display: 'flex', gap: '0.25rem', justifyContent: 'flex-end', alignItems: 'center' }}>
-                            {email.reply_required === 1 && (
-                              <>
-                                <button
-                                  className="btn btn-primary btn-small"
-                                  style={{ padding: '0.3rem 0.6rem', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '0.2rem' }}
-                                  onClick={() => openInlineReply(email, 'reply')}
-                                  title={email.reply_reason || 'Generate reply to this email'}
-                                >
-                                  <Send size={11} />
-                                  Reply
-                                </button>
-                                
-                                <button
-                                  className="btn btn-small"
-                                  style={{ 
-                                    padding: '0.3rem 0.6rem', 
-                                    fontSize: '0.78rem',
-                                    backgroundColor: '#7c3aed',
-                                    color: 'white',
-                                    border: 'none',
-                                    borderRadius: '6px',
-                                    fontWeight: '600',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '0.2rem',
-                                    cursor: 'pointer',
-                                    opacity: quickReplyLoading[email.id] ? 0.7 : 1
-                                  }}
-                                  onClick={() => handleQuickAutoReplyForEmail(email)}
-                                  disabled={quickReplyLoading[email.id]}
-                                  title="Generate suggested reply and send it immediately using AI"
-                                >
-                                  {quickReplyLoading[email.id] ? (
-                                    <span className="spinner-mini" style={{ width: '10px', height: '10px', border: '2px solid white', borderTop: '2px solid transparent', borderRadius: '50%', display: 'inline-block', animation: 'spin 1s linear infinite' }}></span>
-                                  ) : (
-                                    <Zap size={11} />
-                                  )}
-                                  {quickReplyLoading[email.id] ? 'Sending...' : 'AI Auto-Send'}
-                                </button>
-                              </>
-                            )}
-                            <button
-                              className="btn btn-secondary btn-small"
-                              style={{ padding: '0.3rem 0.6rem', fontSize: '0.78rem' }}
-                              onClick={() => handleToggleRead(email)}
-                              title={email.is_unread === 1 ? 'Mark as read in Gmail' : 'Mark as unread in Gmail'}
-                            >
-                              {email.is_unread === 1 ? <Eye size={12} /> : <EyeOff size={12} />}
-                              {email.is_unread === 1 ? 'Read' : 'Unread'}
-                            </button>
-                            <button
-                              className="btn btn-secondary btn-small"
-                              style={{ padding: '0.3rem 0.6rem', fontSize: '0.78rem' }}
-                              onClick={() => handleOpenEmailDetail(email.id)}
-                            >
-                              Inspect
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {/* Pagination Footer */}
-            {allEmailsTotal > 0 && (
-              <div 
-                style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
-                  alignItems: 'center', 
-                  padding: '1rem', 
-                  backgroundColor: 'var(--bg-card)', 
-                  border: '1px solid var(--border-color)', 
-                  borderRadius: '4px',
-                  marginTop: '1rem',
-                  fontSize: '0.85rem',
-                  color: 'var(--text-muted)',
-                  flexWrap: 'wrap',
-                  gap: '1rem'
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span>Show</span>
-                  <select
-                    className="search-input"
-                    style={{ 
-                      padding: '0.25rem 0.5rem', 
-                      background: 'rgba(255,255,255,0.03)', 
-                      border: '1px solid var(--border-color)', 
-                      borderRadius: '6px',
-                      fontSize: '0.85rem'
-                    }}
-                    value={allEmailsLimit}
-                    onChange={(e) => {
-                      setAllEmailsLimit(Number(e.target.value));
-                      setAllEmailsPage(1);
-                    }}
-                  >
-                    {[10, 20, 50, 100].map(val => (
-                      <option key={val} value={val} style={{ backgroundColor: 'var(--bg-main)' }}>{val}</option>
-                    ))}
-                  </select>
-                  <span>emails per page</span>
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                  <button
-                    className="btn btn-secondary"
-                    style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
-                    disabled={allEmailsPage === 1 || allEmailsLoading}
-                    onClick={() => setAllEmailsPage(prev => Math.max(prev - 1, 1))}
-                  >
-                    Previous
-                  </button>
-                  <span>
-                    Page <strong>{allEmailsPage}</strong> of <strong>{Math.ceil(allEmailsTotal / allEmailsLimit) || 1}</strong>
-                  </span>
-                  <button
-                    className="btn btn-secondary"
-                    style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
-                    disabled={allEmailsPage >= Math.ceil(allEmailsTotal / allEmailsLimit) || allEmailsLoading}
-                    onClick={() => setAllEmailsPage(prev => prev + 1)}
-                  >
-                    Next
-                  </button>
-                </div>
-              </div>
-            )}
+                        Reset ✕
+                      </button>
+                    )}
+                  </div>
+                ),
+                countLabel: `${allEmails.length} of ${allEmailsTotal} emails`,
+                loading: allEmailsLoading,
+                threads: allEmails.map(email => {
+                  const rawDate = String(email.date || email.date_received || '').trim();
+                  const mysql = rawDate.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})$/);
+                  return {
+                    key: `db-${email.id}`,
+                    threadId: email.thread_id || null,
+                    from: email.sender || '',
+                    subject: email.subject || '(no subject)',
+                    snippet: email.body_preview || '',
+                    date: mysql ? `${mysql[1]}T${mysql[2]}Z` : rawDate,
+                    isUnread: email.is_unread === 1,
+                    isStarred: email.is_starred === 1,
+                    unreadCount: Number(email.unread_count) || 0,
+                    hasAttachments: Boolean(String(email.attach_names || '').trim()),
+                    raw: email,
+                  };
+                }),
+                renderBadges: (item) => {
+                  const email = item.raw;
+                  const labels = String(email.user_labels || '').split(',').map(l => l.trim()).filter(Boolean);
+                  return (
+                    <span className="mailbox-explorer-badges">
+                      {email.reply_required === 1 && (
+                        <span className="mailbox-explorer-badge urgent" title={email.reply_reason || 'Urgent reply required'}>Urgent Reply</span>
+                      )}
+                      {email.is_important === 1 && <span className="mailbox-explorer-badge urgent">Important</span>}
+                      <span
+                        className="mailbox-explorer-badge"
+                        style={{ color: CATEGORY_COLORS[email.category] || undefined }}
+                      >
+                        {email.category || 'General'}{email.sub_category ? ` · ${email.sub_category}` : ''}
+                      </span>
+                      {labels.slice(0, 2).map(lbl => (
+                        <span key={lbl} className="mailbox-explorer-badge" style={{ color: '#10b981' }}>{lbl}</span>
+                      ))}
+                    </span>
+                  );
+                },
+                onRefresh: () => fetchAllEmails(),
+                onInspect: (email) => handleOpenEmailDetail(email.id),
+                onUpdate: (threadId, patch) => {
+                  setAllEmails(prev => prev.map(e => e.thread_id === threadId ? {
+                    ...e,
+                    is_unread: patch.isUnread ? 1 : 0,
+                    unread_count: patch.unreadCount ?? e.unread_count,
+                    is_starred: patch.isStarred ? 1 : 0,
+                  } : e));
+                },
+                onRemove: (threadId) => {
+                  const removed = allEmails.filter(e => e.thread_id === threadId).length;
+                  setAllEmails(prev => prev.filter(e => e.thread_id !== threadId));
+                  setAllEmailsTotal(total => Math.max(0, total - removed));
+                },
+                footer: allEmailsTotal > 0 && (
+                  <div className="mailbox-explorer-footer">
+                    <select
+                      value={allEmailsLimit}
+                      onChange={(e) => {
+                        setAllEmailsLimit(Number(e.target.value));
+                        setAllEmailsPage(1);
+                      }}
+                      title="Emails per page"
+                    >
+                      {[10, 20, 50, 100].map(val => (
+                        <option key={val} value={val}>{val} / page</option>
+                      ))}
+                    </select>
+                    <span>
+                      Page <strong>{allEmailsPage}</strong> of <strong>{Math.ceil(allEmailsTotal / allEmailsLimit) || 1}</strong>
+                    </span>
+                    <div style={{ display: 'flex', gap: '0.35rem' }}>
+                      <button
+                        className="btn btn-secondary"
+                        disabled={allEmailsPage === 1 || allEmailsLoading}
+                        onClick={() => setAllEmailsPage(prev => Math.max(prev - 1, 1))}
+                      >
+                        Prev
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        disabled={allEmailsPage >= Math.ceil(allEmailsTotal / allEmailsLimit) || allEmailsLoading}
+                        onClick={() => setAllEmailsPage(prev => prev + 1)}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                ),
+              }}
+            />
           </div>
         )}
 
