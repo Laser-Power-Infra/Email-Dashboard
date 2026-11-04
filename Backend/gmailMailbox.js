@@ -422,7 +422,11 @@ function collectParts(part, state) {
   const contentId = String(headers['content-id'] || '').replace(/^<|>$/g, '');
   const disposition = String(headers['content-disposition'] || '').toLowerCase();
   const isAttachment = Boolean(filename && body.attachmentId);
-  const isInline = Boolean(contentId) || disposition.includes('inline');
+  // Only images can be displayed inline inside the email HTML. Mailers often
+  // add a Content-ID to real files (xls, pdf, ...) too; those must stay listed
+  // as normal attachments or they disappear from the UI and from forwards.
+  const isImage = mimeType.startsWith('image/');
+  const isInline = isImage && (Boolean(contentId) || disposition.includes('inline'));
 
   if (isAttachment) {
     state.attachments.push({
@@ -434,7 +438,9 @@ function collectParts(part, state) {
       contentId,
       inline: isInline,
     });
-    if (isInline && contentId) {
+    // cid: URL rewriting must keep working for every part that has a
+    // Content-ID, even ones listed as normal attachments.
+    if (contentId) {
       state.inlineAttachments.push({
         contentId,
         attachmentId: body.attachmentId,

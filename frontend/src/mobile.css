@@ -380,10 +380,34 @@
     max-width: none;
   }
 
+  .explorer-filters .explorer-dates {
+    height: 44px;
+  }
+
   .explorer-filters .explorer-dates input {
     flex: 1;
     width: auto;
     min-width: 0;
+    height: 100%;
+  }
+
+  .explorer-filters .explorer-dates button {
+    width: 32px;
+    height: 32px;
+    font-size: 14px;
+  }
+
+  /* Date presets: one easy-to-tap row */
+  .explorer-filters .explorer-date-presets {
+    display: flex;
+    width: 100%;
+    gap: 8px;
+  }
+
+  .explorer-filters .explorer-date-presets .explorer-chip-sm {
+    flex: 1;
+    height: 38px;
+    font-size: 13px;
   }
 
   .explorer-search {
@@ -569,6 +593,91 @@
     left: 12px !important;
     right: 12px !important;
     bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+  }
+
+  /* ---- Attachments: full-width rows with big touch targets ---- */
+  .mailbox-attachment-row {
+    width: 100%;
+  }
+
+  .mailbox-attachment {
+    flex: 1;
+    min-height: 44px;
+    padding: 6px 10px;
+    font-size: 13px;
+    border-radius: 8px;
+  }
+
+  .mailbox-attachment-download {
+    min-width: 44px;
+    min-height: 44px;
+    border-radius: 8px;
+  }
+
+  /* ---- Attachment preview: true full screen on phones ---- */
+  .attachment-viewer-backdrop {
+    padding: 0;
+  }
+
+  .attachment-viewer {
+    max-width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    border: none;
+    border-radius: 0;
+  }
+
+  .attachment-viewer-head {
+    padding-top: calc(8px + env(safe-area-inset-top));
+    min-height: 48px;
+  }
+
+  .attachment-viewer-actions button,
+  .attachment-viewer-actions a {
+    width: 40px;
+    height: 40px;
+  }
+
+  .attachment-viewer-size {
+    display: none; /* size shows inside the chip already; save header space */
+  }
+
+  .attachment-viewer-pages {
+    padding: 6px 6px 12px;
+  }
+
+  .attachment-viewer-foot {
+    padding-bottom: calc(6px + env(safe-area-inset-bottom));
+  }
+
+  .attachment-viewer-doc {
+    padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+    font-size: 14px;
+  }
+
+  .attachment-viewer-sheetbar button {
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+
+  .attachment-viewer-table {
+    font-size: 11px;
+  }
+
+  .attachment-viewer-table td {
+    max-width: 200px;
+  }
+
+  /* ---- Faster scrolling: skip offscreen work in long mail lists ---- */
+  .mailbox-thread {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 96px;
+  }
+
+  .mailbox-thread-list,
+  .mailbox-messages,
+  .mailbox-action-group {
+    -webkit-overflow-scrolling: touch;
   }
 }
 

@@ -1063,6 +1063,9 @@ function App() {
   const [subEndDate, setSubEndDate] = useState('');
   const [recStartDate, setRecStartDate] = useState('');
   const [recEndDate, setRecEndDate] = useState('');
+  // Bumped to re-mount the received-date inputs: some mobile browsers keep
+  // showing the old picked date after a controlled value is cleared to ''.
+  const [recDatesKey, setRecDatesKey] = useState(0);
   const [showOnlyParticipatedIds, setShowOnlyParticipatedIds] = useState(false);
 
   const [remapping, setRemapping] = useState(false);
@@ -1321,9 +1324,38 @@ function App() {
   };
 
   const handleClearRecFilter = () => {
+    setRecFilterMode('range');
     setRecStartDate('');
     setRecEndDate('');
     setRecIntervalValue('');
+    setRecDatesKey(k => k + 1);
+  };
+
+  // Quick "last N days" received-date presets (Today = 1)
+  const applyRecPreset = (days) => {
+    setRecFilterMode('range');
+    const now = new Date();
+    const start = new Date(now);
+    start.setDate(now.getDate() - (days - 1));
+    setRecStartDate(getLocalDateString(start));
+    setRecEndDate(getLocalDateString(now));
+    setRecDatesKey(k => k + 1);
+  };
+
+  const isRecPresetActive = (days) => {
+    if (!recStartDate || !recEndDate) return false;
+    const now = new Date();
+    const start = new Date(now);
+    start.setDate(now.getDate() - (days - 1));
+    return recStartDate === getLocalDateString(start) && recEndDate === getLocalDateString(now);
+  };
+
+  const openDatePicker = (input) => {
+    if (!input) return;
+    try {
+      input.focus();
+      if (typeof input.showPicker === 'function') input.showPicker();
+    } catch { /* showPicker may be unavailable or blocked; focus is enough */ }
   };
 
   const [loading, setLoading] = useState(false);
@@ -4840,19 +4872,55 @@ function App() {
                       </select>
                     )}
 
-                    <div className="explorer-dates" title="Email received date">
+                    <div
+                      className="explorer-dates"
+                      key={`rec-dates-${recDatesKey}`}
+                      title="Email received date"
+                      onClick={(e) => {
+                        // Tapping the icon / dash / empty space opens the start-date picker
+                        const tag = String(e.target.tagName || '').toLowerCase();
+                        if (tag !== 'input' && tag !== 'button') {
+                          openDatePicker(e.currentTarget.querySelector('input[type="date"]'));
+                        }
+                      }}
+                    >
                       <Calendar size={13} />
                       <input
                         type="date"
                         value={recStartDate}
+                        max={recEndDate || undefined}
+                        onClick={(e) => openDatePicker(e.currentTarget)}
                         onChange={(e) => { setRecFilterMode('range'); setRecStartDate(e.target.value); }}
                       />
                       <span>–</span>
                       <input
                         type="date"
                         value={recEndDate}
+                        min={recStartDate || undefined}
+                        onClick={(e) => openDatePicker(e.currentTarget)}
                         onChange={(e) => { setRecFilterMode('range'); setRecEndDate(e.target.value); }}
                       />
+                      {(recStartDate || recEndDate) && (
+                        <button
+                          type="button"
+                          title="Clear dates"
+                          onClick={(e) => { e.stopPropagation(); handleClearRecFilter(); }}
+                        >✕</button>
+                      )}
+                    </div>
+
+                    <div className="explorer-date-presets">
+                      {[{ label: 'Today', days: 1 }, { label: '7d', days: 7 }, { label: '30d', days: 30 }].map(preset => (
+                        <button
+                          key={preset.days}
+                          type="button"
+                          className={`explorer-chip explorer-chip-sm ${isRecPresetActive(preset.days) ? 'active' : ''}`}
+                          onClick={() => (isRecPresetActive(preset.days) ? handleClearRecFilter() : applyRecPreset(preset.days))}
+                          title={preset.days === 1 ? 'Emails received today' : `Emails received in the last ${preset.days} days`}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
                     </div>
 
                     <button

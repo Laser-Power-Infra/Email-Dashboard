@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import EmailHtmlViewer from './EmailHtmlViewer';
 import EmailComposer from './EmailComposer';
+import AttachmentViewer from './AttachmentViewer';
 import {
   clearMailboxApiCache,
   isQuotaError,
@@ -147,6 +148,7 @@ export default function Mailbox({ explorer = null }) {
   const [compose, setCompose] = useState(null);
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState(null);
+  const [previewAttachment, setPreviewAttachment] = useState(null);
   const composerRef = useRef(null);
 
   const showToast = useCallback((message, type = 'success') => {
@@ -998,17 +1000,26 @@ export default function Mailbox({ explorer = null }) {
                           Attachments
                         </div>
                         {message.attachments.filter(a => !a.inline).map(attachment => (
-                          <a
-                            key={attachment.attachmentId}
-                            href={attachmentUrl({ ...attachment, messageId: message.id })}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="mailbox-attachment"
-                          >
-                            <Download size={13} />
-                            <span>{attachment.filename}</span>
-                            <small>{attachment.size ? `${Math.round(attachment.size / 1024)} KB` : ''}</small>
-                          </a>
+                          <div className="mailbox-attachment-row" key={attachment.attachmentId}>
+                            <button
+                              type="button"
+                              className="mailbox-attachment"
+                              title="Preview attachment"
+                              onClick={() => setPreviewAttachment({ ...attachment, messageId: message.id })}
+                            >
+                              <Eye size={13} />
+                              <span>{attachment.filename}</span>
+                              <small>{attachment.size ? `${Math.round(attachment.size / 1024)} KB` : ''}</small>
+                            </button>
+                            <a
+                              className="mailbox-attachment-download"
+                              href={attachmentUrl({ ...attachment, messageId: message.id })}
+                              download={attachment.filename || 'attachment'}
+                              title="Download"
+                            >
+                              <Download size={14} />
+                            </a>
+                          </div>
                         ))}
                       </div>
                     )}
@@ -1061,6 +1072,13 @@ export default function Mailbox({ explorer = null }) {
           sending={sending}
           profileEmail={profile?.emailAddress}
           quotaRemaining={quotaRemaining}
+        />
+      )}
+
+      {previewAttachment && (
+        <AttachmentViewer
+          attachment={previewAttachment}
+          onClose={() => setPreviewAttachment(null)}
         />
       )}
 

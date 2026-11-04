@@ -463,11 +463,20 @@
   letter-spacing: 0.04em;
 }
 
+.mailbox-attachment-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .mailbox-attachment {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: fit-content;
+  min-width: 0;
   max-width: 100%;
   padding: 3px 6px;
   border: 1px solid var(--border-color);
@@ -476,10 +485,31 @@
   color: var(--text-main);
   text-decoration: none;
   font-size: 11px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .mailbox-attachment:hover {
   border-color: var(--color-primary);
+}
+
+.mailbox-attachment-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 26px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-card-hover);
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.mailbox-attachment-download:hover {
+  border-color: var(--color-primary);
+  color: var(--text-main);
 }
 
 .mailbox-attachment span {
@@ -859,6 +889,10 @@
   color: var(--text-muted);
 }
 
+.explorer-dates {
+  cursor: pointer;
+}
+
 .explorer-dates input {
   border: none;
   outline: none;
@@ -866,7 +900,41 @@
   color: var(--text-main);
   font-size: 12px;
   width: 112px;
+  min-width: 0;
   color-scheme: light dark;
+  cursor: pointer;
+}
+
+.explorer-dates button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.explorer-dates button:hover {
+  background: var(--bg-card-hover);
+  color: #ef4444;
+}
+
+.explorer-date-presets {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.explorer-chip.explorer-chip-sm {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
 }
 
 .explorer-chip {
@@ -908,4 +976,349 @@
   .explorer-search.explorer-search-small {
     width: 100%;
   }
+}
+
+/* ── Attachment preview viewer ── */
+.attachment-viewer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.attachment-viewer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 980px;
+  height: 100%;
+  max-height: 94vh;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-card);
+}
+
+.attachment-viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-main);
+}
+
+.attachment-viewer-fileicon {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.attachment-viewer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.attachment-viewer-size {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.attachment-viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.attachment-viewer-actions button,
+.attachment-viewer-actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.attachment-viewer-actions button:hover,
+.attachment-viewer-actions a:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-color);
+  color: var(--text-main);
+}
+
+.attachment-viewer-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.attachment-viewer-zoom {
+  min-width: 38px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.attachment-viewer-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  background: #3a3d42;
+}
+
+.attachment-viewer-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px 20px;
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.attachment-viewer-pages {
+  padding: 10px 12px 16px;
+}
+
+.attachment-pdf-page {
+  display: block;
+  margin: 10px auto 0;
+  max-width: none;
+  height: auto;
+  background: #ffffff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
+.attachment-viewer-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #ffffff;
+}
+
+.attachment-viewer-imagewrap {
+  min-height: 100%;
+  padding: 14px;
+  text-align: center;
+}
+
+.attachment-viewer-img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.attachment-viewer-text {
+  min-height: 100%;
+  margin: 0;
+  padding: 14px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-align: left;
+}
+
+.attachment-viewer-video {
+  display: block;
+  width: 100%;
+  max-height: 100%;
+  background: #000;
+}
+
+.attachment-viewer-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 100%;
+  padding: 36px 20px;
+  color: #cbd5e1;
+  font-size: 13px;
+  text-align: center;
+}
+
+.attachment-viewer-fallback p {
+  max-width: 360px;
+  margin: 0;
+}
+
+.attachment-viewer-fallback-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.attachment-viewer-fallback-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+}
+
+.attachment-viewer-foot {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* Excel preview */
+.attachment-viewer-sheet {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  background: #ffffff;
+}
+
+.attachment-viewer-sheetbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 6px 8px 0;
+  background: #e2e8f0;
+  border-bottom: 1px solid #cbd5e1;
+  scrollbar-width: thin;
+}
+
+.attachment-viewer-sheetbar button {
+  flex: 0 0 auto;
+  padding: 6px 14px;
+  border: 1px solid #cbd5e1;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.attachment-viewer-sheetbar button.active {
+  background: #ffffff;
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.attachment-viewer-tablewrap {
+  flex: 1;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.attachment-viewer-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  color: #0f172a;
+  background: #ffffff;
+}
+
+.attachment-viewer-table td {
+  border: 1px solid #e2e8f0;
+  padding: 4px 8px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.attachment-viewer-table tr:first-child td {
+  position: sticky;
+  top: 0;
+  background: #f8fafc;
+  font-weight: 600;
+  z-index: 1;
+}
+
+.attachment-viewer-sheetempty {
+  padding: 30px;
+  color: #64748b;
+  font-size: 13px;
+  text-align: center;
+}
+
+.attachment-viewer-sheetnote {
+  padding: 8px 12px;
+  background: #fef9c3;
+  color: #854d0e;
+  font-size: 11px;
+  text-align: center;
+}
+
+/* Word (.docx) preview */
+.attachment-viewer-doc {
+  min-height: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 28px 32px;
+  background: #ffffff;
+  color: #1e293b;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 15px;
+  line-height: 1.7;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+.attachment-viewer-doc h1,
+.attachment-viewer-doc h2,
+.attachment-viewer-doc h3 {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.attachment-viewer-doc img {
+  max-width: 100%;
+  height: auto;
+}
+
+.attachment-viewer-doc table {
+  border-collapse: collapse;
+  max-width: 100%;
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+.attachment-viewer-doc table td,
+.attachment-viewer-doc table th {
+  border: 1px solid #cbd5e1;
+  padding: 4px 8px;
+}
+
+.attachment-viewer-doc a {
+  color: #2563eb;
 }
