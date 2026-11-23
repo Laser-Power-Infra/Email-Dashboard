@@ -1072,7 +1072,7 @@ function findAuthFile(filename) {
   return null;
 }
 
-async function getSheetsClient() {
+async function getGoogleOAuthClient() {
   let credentials, token, tokenPath;
 
   if (process.env.GOOGLE_CREDENTIALS_JSON && process.env.GOOGLE_TOKEN_JSON) {
@@ -1125,7 +1125,15 @@ async function getSheetsClient() {
     }
   });
 
-  return google.sheets({ version: 'v4', auth: oAuth2Client });
+  return oAuth2Client;
+}
+
+async function getSheetsClient() {
+  return google.sheets({ version: 'v4', auth: await getGoogleOAuthClient() });
+}
+
+async function getDriveClient() {
+  return google.drive({ version: 'v3', auth: await getGoogleOAuthClient() });
 }
 
 async function getSheetTitleByGid(sheets, spreadsheetId, gid) {
@@ -3892,6 +3900,114 @@ app.get('/api/all-emails', async (req, res) => {
   }
 });
 
+// 10a. All stored mail across BOTH databases: live (defaultdb) + backfilled history (old_mails).
+// GET /api/db-emails?page=1&limit=100&source=all|live|old&search=&category=&startDate=&endDate=&sortOrder=desc&full=false
+// Rows are merged by date and tagged with source: 'live' | 'old'.
+app.get('/api/db-emails', async (req, res) => {
+  const LIVE_DB = process.env.DB_NAME || 'defaultdb';
+  const OLD_DB = process.env.OLD_MAILS_DB_NAME || 'old_mails';
+  const safeIdent = /^[A-Za-z0-9_]+$/;
+  if (!safeIdent.test(LIVE_DB) || !safeIdent.test(OLD_DB)) {
+    return res.status(500).json({ success: false, error: 'Invalid database name configuration' });
+  }
+
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 100));
+  const offset = (page - 1) * limit;
+  const orderDir = String(req.query.sortOrder).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  const source = ['live', 'old'].includes(req.query.source) ? req.query.source : 'all';
+  const full = String(req.query.full) === 'true';
+  const { search, category, startDate, endDate } = req.query;
+
+  // Shared WHERE for both tables (identical schemas).
+  const conditions = [];
+  const params = [];
+  if (category) {
+    const catList = String(category).split(',').map(c => c.trim().toLowerCase()).filter(Boolean);
+    if (catList.length) {
+      conditions.push(`LOWER(t.category) IN (${catList.map(() => '?').join(',')})`);
+      params.push(...catList);
+    }
+  }
+  const { startUtc, endUtc } = getUtcRangeForIstDates(startDate, endDate);
+  if (startUtc) { conditions.push('t.date >= ?'); params.push(startUtc); }
+  if (endUtc) { conditions.push('t.date <= ?'); params.push(endUtc); }
+  if (search) {
+    conditions.push('(t.subject LIKE ? OR t.sender LIKE ? OR t.body LIKE ? OR t.ocr_text LIKE ?)');
+    const s = `%${search}%`;
+    params.push(s, s, s, s);
+  }
+  const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+
+  const sources = [];
+  if (source !== 'old') sources.push({ tag: 'live', db: LIVE_DB });
+  if (source !== 'live') sources.push({ tag: 'old', db: OLD_DB });
+
+  let conn;
+  try {
+    conn = await getDbConnection();
+
+    // 1) Total across selected databases.
+    let total = 0;
+    for (const s of sources) {
+      const [[row]] = await conn.execute(`SELECT COUNT(*) AS c FROM \`${s.db}\`.threads t${where}`, params);
+      total += Number(row.c);
+    }
+
+    // 2) Page of ids (index-only). Each side is capped at offset+limit before the merge-sort.
+    const nullsLast = 'CASE WHEN t.date IS NULL THEN 1 ELSE 0 END';
+    const parts = sources.map(s =>
+      `(SELECT '${s.tag}' AS src, t.id, t.date, ${nullsLast} AS nd FROM \`${s.db}\`.threads t${where}
+        ORDER BY ${nullsLast}, t.date ${orderDir}, t.id ${orderDir} LIMIT ${offset + limit})`
+    );
+    const unionParams = sources.flatMap(() => params);
+    const [pageIds] = await conn.execute(
+      `SELECT src, id FROM (${parts.join(' UNION ALL ')}) u
+       ORDER BY nd, date ${orderDir}, id ${orderDir} LIMIT ${limit} OFFSET ${offset}`,
+      unionParams
+    );
+
+    // 3) Full rows for the page, fetched per database, then put back in page order.
+    const textCols = full
+      ? 't.body, t.ocr_text'
+      : 'LEFT(t.body, 3000) AS body, LEFT(t.body, 300) AS body_preview';
+    const rowsByKey = new Map();
+    for (const s of sources) {
+      const ids = pageIds.filter(r => r.src === s.tag).map(r => r.id);
+      if (!ids.length) continue;
+      const [rows] = await conn.execute(
+        `SELECT t.id, t.thread_id, t.subject, t.sender,
+                DATE_FORMAT(t.date, '%Y-%m-%d %H:%i:%s') AS date,
+                t.cc_details, t.to_details, t.company, t.category, t.sub_category, t.priority,
+                t.is_important, t.user_labels, t.attach_names, t.attach_links,
+                t.is_unread, t.unread_count, t.is_starred, t.msg_count, ${textCols}
+         FROM \`${s.db}\`.threads t WHERE t.id IN (${ids.map(() => '?').join(',')})`,
+        ids
+      );
+      for (const r of rows) rowsByKey.set(`${s.tag}:${r.id}`, { source: s.tag, ...r });
+    }
+    const emails = pageIds
+      .map(r => rowsByKey.get(`${r.src}:${r.id}`))
+      .filter(Boolean)
+      .map(sanitizeEmailAttachments);
+
+    res.json({
+      success: true,
+      source,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+      emails
+    });
+  } catch (error) {
+    console.error('[db-emails] Error:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
+});
+
 // 10b. Get Export Mailbox emails (export@laserpowerinfra.com - sending & receiving)
 app.get('/api/export-emails', async (req, res) => {
   let conn;
@@ -5328,6 +5444,72 @@ app.get('/api/mailbox/attachments/:messageId/:attachmentId', async (req, res) =>
     res.send(buffer);
   } catch (err) {
     handleMailboxError(res, err, 'Could not download attachment');
+  }
+});
+
+// Stream a Google Drive file through the portal so attachments stored in Drive
+// can be previewed in-app (no Drive login needed on the device).
+// Google-native files are exported to a format the in-app viewer can open.
+app.get('/api/drive-file/:fileId', async (req, res) => {
+  try {
+    const fileId = String(req.params.fileId || '').trim();
+    if (!/^[A-Za-z0-9_-]{10,}$/.test(fileId)) {
+      return res.status(400).json({ success: false, message: 'Invalid Drive file id.' });
+    }
+
+    const drive = await getDriveClient();
+    const meta = await drive.files.get({ fileId, fields: 'name, mimeType, size', supportsAllDrives: true });
+    let mime = String(meta.data.mimeType || 'application/octet-stream');
+    let name = String(req.query.filename || meta.data.name || 'attachment');
+    const inline = String(req.query.inline || '') === '1';
+
+    let stream;
+    if (mime.startsWith('application/vnd.google-apps.')) {
+      // Native Google file: export to an Office/PDF format the viewer understands.
+      const exports = {
+        'application/vnd.google-apps.spreadsheet': {
+          mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          ext: '.xlsx',
+        },
+        'application/vnd.google-apps.document': {
+          mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          ext: '.docx',
+        },
+      };
+      const target = exports[mime] || { mime: 'application/pdf', ext: '.pdf' };
+      const exportResp = await drive.files.export(
+        { fileId, mimeType: target.mime },
+        { responseType: 'stream' }
+      );
+      stream = exportResp.data;
+      mime = target.mime;
+      if (!/\.[a-z0-9]{2,5}$/i.test(name)) name += target.ext;
+    } else {
+      const fileResp = await drive.files.get(
+        { fileId, alt: 'media', supportsAllDrives: true },
+        { responseType: 'stream' }
+      );
+      stream = fileResp.data;
+      if (meta.data.size) res.setHeader('Content-Length', meta.data.size);
+    }
+
+    const safeName = name.replace(/[\r\n"]/g, '_');
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${safeName}"`);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    stream.on('error', () => {
+      if (!res.headersSent) res.status(502);
+      res.end();
+    });
+    stream.pipe(res);
+  } catch (err) {
+    const status = Number(err && err.code) === 404 ? 404 : 500;
+    res.status(status).json({
+      success: false,
+      message: status === 404
+        ? 'File not found in Google Drive (it may have been moved or deleted).'
+        : (err.message || 'Could not load the Drive file.'),
+    });
   }
 });
 
