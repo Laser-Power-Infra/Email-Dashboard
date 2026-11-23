@@ -105,6 +105,38 @@ services:
         max-size: "20m"
         max-file: "3"
 
+  # 4. One-time backfill of Gmail history older than defaultdb -> old_mails DB.
+  #    Same image/code as emails-agent, separate process so it can never stall live ingestion.
+  #    Resumable: restarts continue from the last unfinished month; exits when history is done.
+  emails-oldmails:
+    build:
+      context: ./Emails_agent
+      dockerfile: Dockerfile
+    container_name: match_emails_oldmails
+    command: ["python", "old_mails_backfill.py"]
+    restart: on-failure
+    cpus: 1
+    mem_limit: 2g
+    mem_reservation: 256m
+    environment:
+      - OMP_THREAD_LIMIT=1
+    volumes:
+      - ./Emails_agent:/app
+      - ./:/app/root_config:ro
+      - ./token.json:/app/root_config/token.json:rw
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    networks:
+      - match_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
 networks:
   match_net:
     driver: bridge
