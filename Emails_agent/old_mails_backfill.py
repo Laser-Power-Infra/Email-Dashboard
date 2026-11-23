@@ -15,7 +15,8 @@ things are redirected:
   * backend tender-scan trigger -> OFF
 
 How it walks history:
-  Upper bound = oldest `date` in defaultdb.threads (+1 day overlap, saved on first run).
+  Starts just before [old_mails] start_before in config.ini (default 2026-09-01, IST) –
+  defaultdb is only complete from Sep 2026, so Jan–Aug 2026 is scanned too.
   Then month by month backwards (IST month boundaries). After each month it probes
   Gmail for anything older; when nothing older exists the backfill is complete.
   Threads already in defaultdb or old_mails are skipped, so it is safe to stop and
@@ -47,7 +48,11 @@ _cfg.read("config.ini")
 OLD_DB_NAME        = _cfg.get("old_mails", "database", fallback="old_mails")
 OLD_DRIVE_FOLDER   = _cfg.get("old_mails", "drive_folder_id", fallback="").strip() or None
 OLD_DRIVE_NAME     = "Old_Mails_Attachments"
-OVERLAP            = timedelta(days=1)
+# Scan everything strictly before this date (IST midnight). Threads already in
+# defaultdb are skipped, so overlap with the live DB is harmless.
+START_BEFORE = datetime.strptime(
+    _cfg.get("old_mails", "start_before", fallback="2026-09-01").strip(), "%Y-%m-%d"
+).replace(tzinfo=IST)
 
 # Gmail base filter – taken from the live pipeline so exclusions stay identical.
 BASE_QUERY = core.get_search_query(0).split(" after:")[0]
@@ -197,18 +202,6 @@ def get_or_create_old_drive_folder(drive_service) -> str:
 # -----------------------------------------------------------------------
 # History windows
 # -----------------------------------------------------------------------
-def live_oldest_date_utc() -> datetime:
-    conn = live_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT MIN(date) FROM threads WHERE date IS NOT NULL")
-    (oldest,) = cur.fetchone()
-    cur.close()
-    conn.close()
-    if not oldest:
-        raise RuntimeError("defaultdb.threads has no dated rows – nothing to anchor the backfill to")
-    return oldest.replace(tzinfo=timezone.utc)
-
-
 def month_start_ist(dt: datetime) -> datetime:
     d = dt.astimezone(IST)
     return datetime(d.year, d.month, 1, tzinfo=IST)
@@ -315,29 +308,22 @@ def process_window(gmail_service, drive_service, email_map, threads: List[dict])
 
 
 def run(dry_run: bool):
-    oldest_live = live_oldest_date_utc()
-    logger.info(f"Oldest mail in defaultdb.threads: {oldest_live:%Y-%m-%d %H:%M} UTC "
-                f"({oldest_live.astimezone(IST):%Y-%m-%d %H:%M} IST)")
+    upper = START_BEFORE
+    logger.info(f"Scanning all mail before {upper:%Y-%m-%d %H:%M} IST "
+                "(threads already in defaultdb are skipped)")
 
     gmail_service, drive_service = core.get_google_services()
 
-    if dry_run:
-        upper = oldest_live + OVERLAP
-    else:
+    if not dry_run:
         ensure_old_database()
-        saved_upper = meta_get("upper_bound_epoch")
-        if saved_upper:
-            upper = datetime.fromtimestamp(int(saved_upper), tz=timezone.utc)
-        else:
-            upper = oldest_live + OVERLAP
-            meta_set("upper_bound_epoch", str(int(upper.timestamp())))
+        meta_set("start_before", f"{upper:%Y-%m-%d}")
         folder_id = get_or_create_old_drive_folder(drive_service)
         patch_core(folder_id)
         logger.info(f"Writing to DB `{OLD_DB_NAME}`, Drive folder {folder_id}; PO webhook OFF")
 
     finished = set() if dry_run else done_months()
     before = upper
-    month = month_start_ist(upper)
+    month = month_start_ist(upper - timedelta(seconds=1))
     grand_total = grand_new = 0
     services_age = 0
 
