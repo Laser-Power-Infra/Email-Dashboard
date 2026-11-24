@@ -3900,6 +3900,59 @@ app.get('/api/all-emails', async (req, res) => {
   }
 });
 
+// 10. Ceebuild customer-PO mails, for the Ceebuild dashboard (Add order from PO copy) and n8n.
+// Read-only and index-friendly (date / company), so it answers in well under a second.
+// GET /api/db-emails/ceebuild-po?days=21&limit=60      PO-looking Ceebuild mails with attachments
+// GET /api/db-emails/ceebuild-po?q=lanarsy&limit=30    search subject / sender / attachment names
+// GET /api/db-emails/ceebuild-po?threadId=1a0e7019...  one thread
+// attach_names / attach_links are returned raw (names may contain ", "; the dashboard pairs them).
+app.get('/api/db-emails/ceebuild-po', async (req, res) => {
+  const LIVE_DB = process.env.DB_NAME || 'defaultdb';
+  if (!/^[A-Za-z0-9_]+$/.test(LIVE_DB)) return res.status(500).json({ success: false, error: 'Invalid database name configuration' });
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 60));
+  const days = Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 21));
+  const threadId = String(req.query.threadId || '').trim();
+  const words = String(req.query.q || '').trim().split(/\s+/).filter(w => w.length >= 2).slice(0, 6);
+  const CEEBUILD = `(t.company = 'CEEBUILD' OR t.sender LIKE '%ceebuildcompany.com%' OR t.to_details LIKE '%ceebuildcompany.com%' OR t.cc_details LIKE '%ceebuildcompany.com%')`;
+  const PO_LIKE = `(t.subject REGEXP '(purchase|work|revised|amended)[[:space:]]+order|order confirmation|letter of (award|intent)|\\\\b(PO|P\\\\.O\\\\.|LOA|LOI|WO)\\\\b'
+    OR t.attach_names REGEXP '(purchase|work)[[:space:]_-]*order|\\\\b(PO|LOA|WO)\\\\b')`;
+  const NOT_OWN = `t.subject NOT REGEXP 'PO Creation|PO for supply to Ceebuild|Payment Request|CASH STATUS|SCRAP SALE'`;
+  const conditions = [];
+  const params = [];
+  if (threadId) {
+    if (!/^[0-9a-zA-Z_-]{6,64}$/.test(threadId)) return res.status(400).json({ success: false, error: 'Invalid threadId' });
+    conditions.push('t.thread_id = ?');
+    params.push(threadId);
+  } else {
+    conditions.push(CEEBUILD, `t.attach_links LIKE 'http%'`);
+    if (words.length) {
+      for (const w of words) {
+        conditions.push(`CONCAT_WS(' ', t.subject, t.sender, t.attach_names) LIKE ?`);
+        params.push(`%${w}%`);
+      }
+    } else {
+      conditions.push('t.date >= NOW() - INTERVAL ? DAY', PO_LIKE, NOT_OWN);
+      params.push(days);
+    }
+  }
+  let conn;
+  try {
+    conn = await getDbConnection();
+    const [rows] = await conn.query(
+      `SELECT t.thread_id, DATE_FORMAT(t.date, '%Y-%m-%d %H:%i:%s') AS date, t.sender, t.subject, t.company,
+              t.msg_count, t.attach_names, t.attach_links, LEFT(t.body, 8000) AS body_head
+       FROM \`${LIVE_DB}\`.threads t WHERE ${conditions.join(' AND ')} ORDER BY t.date DESC LIMIT ?`,
+      [...params, limit]
+    );
+    res.json({ success: true, count: rows.length, threads: rows });
+  } catch (error) {
+    console.error('[db-emails/ceebuild-po] Error:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    if (conn) releaseDbConnection(conn);
+  }
+});
+
 // 10a. All stored mail across BOTH databases: live (defaultdb) + backfilled history (old_mails).
 // GET /api/db-emails?page=1&limit=100&source=all|live|old&search=&category=&startDate=&endDate=&sortOrder=desc&full=false
 // Rows are merged by date and tagged with source: 'live' | 'old'.
