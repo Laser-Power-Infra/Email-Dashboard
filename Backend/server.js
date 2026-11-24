@@ -3940,7 +3940,10 @@ app.get('/api/db-emails/ceebuild-po', async (req, res) => {
     conn = await getDbConnection();
     const [rows] = await conn.query(
       `SELECT t.thread_id, DATE_FORMAT(t.date, '%Y-%m-%d %H:%i:%s') AS date, t.sender, t.subject, t.company,
-              t.msg_count, t.attach_names, t.attach_links, LEFT(t.body, 8000) AS body_head
+              t.msg_count, t.attach_names, t.attach_links,
+              -- Whole thread up to 30k chars; longer threads keep the start and the END (the latest messages decide the PO status).
+              CASE WHEN CHAR_LENGTH(t.body) <= 30000 THEN t.body
+                   ELSE CONCAT(LEFT(t.body, 2000), '\n[... middle of the thread left out ...]\n', RIGHT(t.body, 28000)) END AS body_head
        FROM \`${LIVE_DB}\`.threads t WHERE ${conditions.join(' AND ')} ORDER BY t.date DESC LIMIT ?`,
       [...params, limit]
     );
