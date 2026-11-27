@@ -3909,13 +3909,17 @@ app.get('/api/all-emails', async (req, res) => {
 app.get('/api/db-emails/ceebuild-po', async (req, res) => {
   const LIVE_DB = process.env.DB_NAME || 'defaultdb';
   if (!/^[A-Za-z0-9_]+$/.test(LIVE_DB)) return res.status(500).json({ success: false, error: 'Invalid database name configuration' });
-  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 60));
+  const limit = Math.min(req.query.all === '1' ? 500 : 100, Math.max(1, parseInt(req.query.limit, 10) || 60));
   const days = Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 21));
   const threadId = String(req.query.threadId || '').trim();
   const words = String(req.query.q || '').trim().split(/\s+/).filter(w => w.length >= 2).slice(0, 6);
   const CEEBUILD = `(t.company = 'CEEBUILD' OR t.sender LIKE '%ceebuildcompany.com%' OR t.to_details LIKE '%ceebuildcompany.com%' OR t.cc_details LIKE '%ceebuildcompany.com%')`;
+  // A PO often arrives later in an enquiry thread ("Fwd: Purchase Enquiry ...") as "N926Y-00023_PO_Ceebuild.pdf".
+  // MySQL's \b treats "_" as a word character, so attachment names use explicit non-alphanumeric
+  // boundaries, and the thread text is checked too (the subject may still say "Enquiry").
   const PO_LIKE = `(t.subject REGEXP '(purchase|work|revised|amended)[[:space:]]+order|order confirmation|letter of (award|intent)|\\\\b(PO|P\\\\.O\\\\.|LOA|LOI|WO)\\\\b'
-    OR t.attach_names REGEXP '(purchase|work)[[:space:]_-]*order|\\\\b(PO|LOA|WO)\\\\b')`;
+    OR t.attach_names REGEXP '(purchase|work)[[:space:]_.-]*order|(^|[^[:alnum:]])(PO|P\\\\.O|LOA|LOI|WO)([^[:alnum:]]|$)'
+    OR t.body REGEXP '(purchase|work)[[:space:]]+order|letter of (award|intent)|P\\\\.?[[:space:]]?O\\\\.?[[:space:]]*(No|Number)\\\\b')`;
   const NOT_OWN = `t.subject NOT REGEXP 'PO Creation|PO for supply to Ceebuild|Payment Request|CASH STATUS|SCRAP SALE'`;
   const conditions = [];
   const params = [];
@@ -3923,8 +3927,14 @@ app.get('/api/db-emails/ceebuild-po', async (req, res) => {
     if (!/^[0-9a-zA-Z_-]{6,64}$/.test(threadId)) return res.status(400).json({ success: false, error: 'Invalid threadId' });
     conditions.push('t.thread_id = ?');
     params.push(threadId);
+  } else if (req.query.all === '1') {
+    // Every Ceebuild thread of the last `days` days (coverage check: nothing PO / enquiry-like may be missed).
+    conditions.push(CEEBUILD, 't.date >= NOW() - INTERVAL ? DAY');
+    params.push(days);
   } else {
-    conditions.push(CEEBUILD, `t.attach_links LIKE 'http%'`);
+    conditions.push(CEEBUILD);
+    // Enquiries often come without attachments (BOQ in the mail text): files=any keeps those.
+    if (req.query.files !== 'any') conditions.push(`t.attach_links LIKE 'http%'`);
     if (words.length) {
       for (const w of words) {
         conditions.push(`CONCAT_WS(' ', t.subject, t.sender, t.attach_names) LIKE ?`);
