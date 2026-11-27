@@ -51,6 +51,8 @@ services:
       - MAILBOX_LIST_CACHE_TTL_SECONDS=60
       - MAILBOX_CACHE_TTL_SECONDS=300
       - GMAIL_QUOTA_RETRY_SECONDS=60
+      # Key for GET /api/db-emails/enquiries; the value is in .env (not committed)
+      - ENQUIRY_FEED_API_KEY=${ENQUIRY_FEED_API_KEY}
     volumes:
       - ./Backend/data:/app/data
       - ./Backend/cache:/app/cache

@@ -43,6 +43,7 @@ const { extractTenderTokens, checkMatch, checkMatchNormalized, checkMatchCompile
 const { shouldUseFullSync } = require('./syncStrategy');
 const { syncDocketQuotationMails } = require('./docketQuotationSync');
 const gmailMailbox = require('./gmailMailbox');
+const { createEnquiryFeedHandler } = require('./enquiryFeed');
 const { rankContacts } = require('./contactSuggest');
 const { AiHealthMonitor, resolveOllamaConfig, isConnectionError } = require('./aiHealth');
 const { prepareTendersForMatching, findBestTenderForThread } = require('./tenderMatchSelector');
@@ -3965,6 +3966,12 @@ app.get('/api/db-emails/ceebuild-po', async (req, res) => {
     if (conn) releaseDbConnection(conn);
   }
 });
+
+// 10-enq. Enquiry mails for the Enquiry to Quotation dashboard. Needs the ENQUIRY_FEED_API_KEY key; see enquiryFeed.js.
+// Registered before the generic /api/db-emails route below, like the ceebuild-po route above.
+app.get('/api/db-emails/enquiries', createEnquiryFeedHandler({
+  getDbConnection, releaseDbConnection, sanitizeEmailAttachments, internalDomains: Object.keys(COMPANY_DOMAIN_MAP),
+}));
 
 // 10a. All stored mail across BOTH databases: live (defaultdb) + backfilled history (old_mails).
 // GET /api/db-emails?page=1&limit=100&source=all|live|old&search=&category=&startDate=&endDate=&sortOrder=desc&full=false
